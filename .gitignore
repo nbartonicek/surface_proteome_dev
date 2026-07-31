@@ -14,6 +14,8 @@
 
 # Rendered reports - regenerate from the .Rmd instead (some are >10 MB).
 *.html
+# ...except the lab archive reports, where the rendered HTML IS the deliverable.
+!lab_archives/**/*.html
 
 # Working output that happens to live in scripts/
 .snakemake/

@@ -3,9 +3,11 @@ title: "LK1 pilot run"
 subtitle: "`r params$run_id`"
 date: "`r Sys.Date()`"
 output:
-  github_document:
+  html_document:
     toc: true
-    html_preview: false
+    toc_float: true
+    code_folding: hide
+    theme: flatly
 params:
   run_id: "260423_VH01624_453_222HWMYNX"
   proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
@@ -20,51 +22,102 @@ params:
 # Renders the lab archive report for the pilot run from the outputs of
 # steps 01-14. Everything that can be read off disk is read off disk, so
 # the report cannot drift from the results: tables come from the summary
-# CSVs each step wrote, the figure index is built by listing the PDFs that
-# are actually there, and the timeline is built from file modification
+# CSVs each step wrote, figures are rasterised straight out of the PDFs
+# those steps produced, and the timeline is built from file modification
 # times. Prose that cannot be derived (why a thing was done, what a figure
-# means) is written out below and marked as such.
+# means) is written out below.
 #
 # Missing inputs are skipped with a note rather than erroring - the pilot
 # predates the nextflow pipeline and some of its outputs have since been
 # cleaned up, so a partial render is the expected case, not a failure.
 #
-# Render with (needs pandoc, e.g. from RStudio):
-#   Rscript -e 'rmarkdown::render("15.LK1_pilot_run_report.Rmd",
-#                                 output_file = "LK1_pilot_run.md")'
+# Same output format as 21.run_qc_report.Rmd (html_document, flatly,
+# floating toc, folded code) and it reuses that script's embed_pdf_figure()
+# so PDF figures render inline rather than being named as paths.
 #
-# Or without pandoc - the output is markdown anyway, so knit is enough:
-#   Rscript -e 'knitr::knit("15.LK1_pilot_run_report.Rmd",
-#                           output = "LK1_pilot_run.md")'
-# knit() does not process the YAML header, so set params by hand first if you
-# need anything other than the defaults above.
+# Render with:
+#   Rscript -e 'rmarkdown::render("15.LK1_pilot_run_report.Rmd")'
+# pandoc is not on PATH on this laptop; if rendering outside RStudio, point
+# at the one inside the RStudio bundle first:
+#   export RSTUDIO_PANDOC=/Applications/RStudio.app/Contents/Resources/app/quarto/bin/tools/aarch64/pandoc
 #
 # Written 2026-07-31 for the retroactive lab archive.
 # ------------------------------------------------------------------
 -->
 
-```{r setup, include = FALSE}
-# results = "asis" and comment = NA because every chunk below emits markdown
-# (kable tables, or cat()ed text) rather than console output.
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
-                      results = "asis", comment = NA)
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
 
 suppressPackageStartupMessages({
-  library(tidyverse)
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(stringr)
+  library(purrr)
   library(knitr)
+  library(DT)
 })
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+# ---------------------------------------------------------------
+# Convert a pipeline-generated PDF figure to PNG and return a markdown image
+# tag, so figures actually render inline in the HTML report instead of just
+# being named as a file path. Falls back to a plain path link if pdftools
+# isn't installed or conversion fails for any reason.
+# (copied verbatim from 21.run_qc_report.Rmd so the two reports behave the same)
+# ---------------------------------------------------------------
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) {
+    cat(sprintf("\n_(pdftools not installed - showing path instead)_ `%s`\n\n", pdf_path))
+    return(invisible(NULL))
+  }
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE)
+    TRUE
+  }, error = function(e) {
+    cat(sprintf("\n_(failed to render `%s`: %s)_\n\n", basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+# Raster images (the copykat heatmaps are jpeg) go in directly - pandoc
+# base64-embeds them when self_contained is on, which is the html_document default.
+embed_image <- function(path, width_pct = 100) {
+  if (is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', path, width_pct))
+}
+
+# One figure with its caption and description, then the image.
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.na(path) || !file.exists(path)) {
+    cat(sprintf("\n_(missing: `%s`)_\n\n", basename(path %||% "")))
+    return(invisible(NULL))
+  }
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  if (grepl("\\.pdf$", path, ignore.case = TRUE)) {
+    embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+  } else {
+    embed_image(path, width_pct = width_pct)
+  }
+}
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
 
 proj    <- params$proj
 run     <- params$run_id
 res     <- file.path(proj, "results")
 raw_dir <- file.path(proj, "raw", run)
 
-# ----------------------------
-# Helpers
-# ----------------------------
-
-# Read a delimited file if it is there, otherwise return NULL. Every table in
-# this report goes through here so a missing input degrades to a note.
+# ---------------------------------------------------------------
+# Small helpers - all reads are defensive: missing files return NULL
+# rather than erroring, so the report renders even for a partial run.
+# ---------------------------------------------------------------
 read_if <- function(path, ...) {
   if (!file.exists(path)) return(NULL)
   out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)),
@@ -72,54 +125,57 @@ read_if <- function(path, ...) {
   if (inherits(out, "try-error")) NULL else out
 }
 
-# Print a table, or say why there isn't one.
 show_table <- function(df, caption = NULL, n = Inf, missing_msg = NULL) {
   if (is.null(df) || nrow(df) == 0) {
-    cat("*", missing_msg %||% "Not available on disk.", "*\n\n", sep = "")
+    cat("\n*", missing_msg %||% "Not available on disk.", "*\n\n", sep = "")
     return(invisible(NULL))
   }
   if (is.finite(n)) df <- head(df, n)
+  cat("\n")
   print(kable(df, caption = caption))
   cat("\n\n")
 }
 
-`%||%` <- function(a, b) if (is.null(a)) b else a
-
-# Directory of interest for this run, under results/
 rd <- function(...) file.path(res, ..., run)
 
 # All output files for this run, with dates - drives the timeline and the
-# figure index below.
+# figure index.
 run_files <- function() {
   dirs <- list.dirs(res, recursive = FALSE, full.names = TRUE)
   hits <- character(0)
   for (d in dirs) {
     p <- file.path(d, run)
-    if (dir.exists(p)) {
-      hits <- c(hits, list.files(p, recursive = TRUE, full.names = TRUE))
-    }
+    if (dir.exists(p)) hits <- c(hits, list.files(p, recursive = TRUE, full.names = TRUE))
   }
   if (!length(hits)) return(NULL)
   tibble(
-    path  = hits,
-    rel   = sub(paste0("^", res, "/"), "", hits),
-    date  = as.Date(file.info(hits)$mtime),
-    ext   = tolower(tools::file_ext(hits))
+    path = hits,
+    rel  = sub(paste0("^", res, "/"), "", hits),
+    date = as.Date(file.info(hits)$mtime),
+    ext  = tolower(tools::file_ext(hits))
   ) %>% filter(!grepl("(^|/)\\._", rel))
 }
 
 files_tbl <- run_files()
+
+# Find one file by the tail of its path, so the figure sections do not have to
+# hardcode which results directory a figure ended up in.
+fig <- function(pattern) {
+  if (is.null(files_tbl)) return(NA_character_)
+  hit <- files_tbl$path[grepl(pattern, files_tbl$rel, fixed = TRUE)]
+  if (!length(hit)) NA_character_ else hit[1]
+}
 ```
 
-# LK1 pilot run
-
 **Run:** `` `r run` ``
+
 **Status:** superseded - LK1 was re-sequenced as `260522_VH01624_461_222JLJVNX`. Everything
 below is the first pass on the pilot data and should not be quoted as a current result.
-**Report generated:** `r Sys.Date()` by `15.LK1_pilot_run_report.Rmd` from the outputs of
-steps 01-14 in this folder.
 
-```{r scope}
+**Generated:** `r Sys.Date()` by `15.LK1_pilot_run_report.Rmd`, from the outputs of steps
+01-14 in this folder.
+
+```{r scope, results='asis'}
 if (is.null(files_tbl)) {
   cat("**No output directories for this run were found under `", res,
       "`.** The rest of this report will be mostly empty.\n\n", sep = "")
@@ -136,7 +192,7 @@ in this folder are the versions that ran, renumbered into execution order.
 
 # 1. Run, libraries and samples
 
-```{r read-counts}
+```{r read-counts, results='asis'}
 rc <- read_if(file.path(raw_dir, "fastq_read_counts.tsv"),
               delim = "\t", col_names = c("fastq", "reads"))
 if (!is.null(rc)) {
@@ -145,12 +201,11 @@ if (!is.null(rc)) {
       grepl("GEX", fastq)  ~ "GEX",
       grepl("-ADT", fastq) ~ "ADT (TotalSeq-A)",
       grepl("-HTO", fastq) ~ "HTO (TotalSeq-A)",
-      TRUE                 ~ "other"
-    )) %>%
+      TRUE                 ~ "other")) %>%
     arrange(desc(reads)) %>%
     mutate(reads = format(reads, big.mark = ","))
 }
-show_table(rc, caption = "R1 read counts per library (from 01.count_reads.sh)",
+show_table(rc, caption = "R1 read counts per library (01.count_reads.sh)",
            missing_msg = "fastq_read_counts.tsv not found - the raw directory may have been cleaned up.")
 ```
 
@@ -170,11 +225,11 @@ Four samples were hashed into the well. The map is hardcoded in
 Note the naming drift: the HTO map writes them with underscores (`HBDN206_MNpCT`), the
 figures and later metadata use hyphens (`HBDN206-MNpCT`). Same samples.
 
-```{r demux-summary}
+```{r demux-tables, results='asis'}
 show_table(read_if(file.path(rd("seurat_demux"), "demux_summary.csv")),
-           caption = "HTO demultiplexing outcome (demux_summary.csv)")
+           caption = "HTO demultiplexing outcome")
 show_table(read_if(file.path(rd("seurat_demux"), "sample_qc_summary.csv")),
-           caption = "Per-sample QC medians (sample_qc_summary.csv)")
+           caption = "Per-sample QC medians")
 ```
 
 # 2. Where the files are
@@ -183,15 +238,14 @@ show_table(read_if(file.path(rd("seurat_demux"), "sample_qc_summary.csv")),
 `/scratch/users/nbartonicek/projects/amgen/raw/`` `r run` ``/` with `Sample_LK1-GEX/`,
 `Sample_LK1-TotalSeqA-ADT/`, `Sample_LK1-TotalSeqA-HTO/`.
 
-```{r raw-check}
+```{r raw-check, results='asis'}
 if (dir.exists(raw_dir)) {
   left <- list.files(raw_dir)
   cat("On `bioinf_scratch`, `raw/", run, "/` currently holds: ",
-      if (length(left)) paste0("`", left, "`", collapse = ", ") else "nothing",
-      ".\n\n", sep = "")
-  if (!any(grepl("fastq", left))) {
-    cat("The pilot FASTQs are **not** there - they are either still on cluster ",
-        "`/scratch` or have been cleaned up.\n\n", sep = "")
+      if (length(left)) paste0("`", left, "`", collapse = ", ") else "nothing", ".\n\n", sep = "")
+  if (!any(grepl("fastq.gz", left))) {
+    cat("The pilot FASTQs are **not** there - they are either still on cluster `/scratch` ",
+        "or have been cleaned up.\n\n", sep = "")
   }
 } else {
   cat("`raw/", run, "/` does not exist on this mount.\n\n", sep = "")
@@ -200,14 +254,14 @@ if (dir.exists(raw_dir)) {
 
 **Reference:** `annotation/refdata-gex-GRCh38-2024-A`
 
-```{r output-dirs}
+```{r output-dirs, results='asis'}
 if (!is.null(files_tbl)) {
   files_tbl %>%
     mutate(dir = sub("/.*", "", rel)) %>%
     group_by(dir) %>%
     summarise(first = min(date), last = max(date), files = n(), .groups = "drop") %>%
     arrange(first) %>%
-    show_table(caption = paste0("Output directories under results/<dir>/", run, "/"))
+    show_table(caption = paste0("Output directories under results/&lt;dir&gt;/", run, "/"))
 }
 ```
 
@@ -215,7 +269,7 @@ if (!is.null(files_tbl)) {
 
 Built from file modification times, so it is when outputs landed, not when jobs started.
 
-```{r timeline}
+```{r timeline, results='asis'}
 if (!is.null(files_tbl)) {
   files_tbl %>%
     mutate(dir = sub("/.*", "", rel)) %>%
@@ -229,13 +283,13 @@ if (!is.null(files_tbl)) {
 
 # 4. What was run, in order
 
-The scripts in this folder are numbered in execution order. Three steps that ran on the
-pilot have **no surviving script**: Cell Ranger, emptyDrops, and cellSNP/vireo. The current
+The scripts in this folder are numbered in execution order. Three steps that ran on the pilot
+have **no surviving script**: Cell Ranger, emptyDrops, and cellSNP/vireo. The current
 top-level versions of those all point at later runs, so they are not included here.
 
 | Step | Script | What it does |
 |---|---|---|
-| - | *(not preserved)* | Cell Ranger count. `02` reads `../results/cellranger/<run>/LK1-GEX/outs/filtered_feature_bc_matrix`. |
+| - | *(not preserved)* | Cell Ranger count. Step 02 reads `../results/cellranger/<run>/LK1-GEX/outs/filtered_feature_bc_matrix`. |
 | 01 | `01.count_reads.sh` | R1 read counts per library. |
 | 02 | `02.initial_QC_and_HTO_demux.R` | Seurat object, HTO + ADT attached, CLR, `HTODemux(positive.quantile = 0.80)`. |
 | - | *(not preserved)* | emptyDrops. Its barcode list is what CITE-seq-Count was re-run against. |
@@ -254,7 +308,7 @@ top-level versions of those all point at later runs, so they are not included he
 | 14 | `14.surfaceome_trial.R` | First surfaceome pass. Exploratory, saves nothing. |
 | 15 | `15.LK1_pilot_run_report.Rmd` | This report. |
 
-Key parameters actually used in step 02: `CreateSeuratObject(min.cells = 3, min.features = 50)`,
+Key parameters in step 02: `CreateSeuratObject(min.cells = 3, min.features = 50)`,
 `percent.mt` from `^MT-`, HTO and ADT normalised CLR with `margin = 2`,
 `HTODemux(positive.quantile = 0.80)`, RNA scaled regressing `percent.mt`, PCA and UMAP on
 `dims = 1:30`, `FindClusters(resolution = 0.5)`.
@@ -264,122 +318,169 @@ The 0.80 positive quantile is the value that later got swept - `demux_comparison
 
 # 5. Results
 
-## 5.1 Demultiplexing: HTO vs vireo
+## 5.1 First-pass QC and HTO demultiplexing
 
-```{r demux-comparison}
-dc <- file.path(rd("demux_comparison"), params$sample_name)
-show_table(read_if(file.path(dc, "demux_efficiency_summary.csv")),
-           caption = "Demux efficiency, HTO vs vireo")
-show_table(read_if(file.path(dc, "hto_vireo_agreement_summary.csv")),
-           caption = "HTO / vireo agreement")
-show_table(read_if(file.path(dc, "hto_vireo_donor_cross_tab.csv")),
-           caption = "HTO sample against vireo donor")
+```{r figs-qc, results='asis'}
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/01_initial_qc_violin.pdf"),
+  "nFeature_RNA, nCount_RNA and percent.mt by `hash.ID`. First look - checks no hashed sample is degraded relative to the others.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/02_hto_ridgeplots.pdf"),
+  "CLR-normalised HTO signal per hashtag. This is the figure that tells you whether hashing worked at all; clean bimodality per HTO is what you want.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/03_umap_demux.pdf"),
+  "HTO global classification, assigned `hash.ID`, and top HTO by raw count. The third panel is the sanity check on the second.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/04_umap_qc_features.pdf"),
+  "UMI counts, detected genes and mitochondrial % on the UMAP. Localised high-MT regions are the dying-cell clusters.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/05_hto_featureplots.pdf"),
+  "Each HTO on the UMAP. Confirms the hashed samples occupy distinct territory rather than smearing.")
 ```
 
-## 5.2 Cell type composition
+## 5.2 Genotype demultiplexing: HTO vs vireo
 
-```{r composition}
+```{r demux-comparison-tables, results='asis'}
+dc <- file.path(rd("demux_comparison"), params$sample_name)
+show_table(read_if(file.path(dc, "demux_efficiency_summary.csv")), caption = "Demux efficiency, HTO vs vireo")
+show_table(read_if(file.path(dc, "hto_vireo_agreement_summary.csv")), caption = "HTO / vireo agreement")
+show_table(read_if(file.path(dc, "hto_vireo_donor_cross_tab.csv")), caption = "HTO sample against vireo donor")
+```
+
+```{r figs-demux, results='asis'}
+show_fig(fig("demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/01_demux_efficiency_barplot.pdf"),
+  "Singlet / doublet / negative rates for HTO and vireo side by side. The headline comparison.")
+show_fig(fig("demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/02_hto_vireo_doublet_comparison.pdf"),
+  "Whether the two methods call the same cells doublets.")
+show_fig(fig("demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/03_hto_vireo_donor_heatmap.pdf"),
+  "HTO sample against vireo donor. Off-diagonal mass is the disagreement.")
+show_fig(fig("demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/04_upset_HTO_vireo_overlap.pdf"),
+  "UpSet of the call overlap.")
+show_fig(fig("genotype_demux/260423_VH01624_453_222HWMYNX/LK1-GEX/vireo/fig_GT_distance_estimated.pdf"),
+  "Vireo estimated genotype distance between donors. Confirms the donors are genetically distinguishable in the first place.")
+```
+
+## 5.3 ADT / CITE-seq QC
+
+```{r figs-adt, results='asis'}
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/06_ADT_QC.pdf"),
+  "ADT totals and features per cell.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/07_top_ADT_markers.pdf"),
+  "Top 5 ADT markers by mean CLR plus biotin. Biotin was added deliberately here - this is the start of the biotin thread that runs through to July.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/08_top_ADT_cluster_markers_dotplot.pdf"),
+  "Top ADT markers per RNA cluster.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/10_top10_discriminative_ADT_plus_biotin_UMAP.pdf"),
+  "Most discriminative ADTs with biotin overlaid.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/11_biotin_expression_by_cluster_violin.pdf"),
+  "Biotin by cluster - the first look at the heterogeneity later split high vs low.")
+```
+
+## 5.4 Annotation (BoneMarrowMap)
+
+```{r figs-annot, results='asis'}
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/01_mapping_error_QC.pdf"),
+  "BoneMarrowMap mapping error. This is the QC that decides which cells get an annotation at all.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/02_projected_predicted_celltypes_pass_only.pdf"),
+  "Predicted cell types on the reference UMAP, cells passing mapping QC only.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/03_projected_samples_pass_only.pdf"),
+  "Samples on the projected UMAP.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/04_projected_pseudotime_pass_only.pdf"),
+  "Projected pseudotime.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/05_projection_by_sampleID_BMM_helper_manual_split.pdf"),
+  "Per-sample projection using the BoneMarrowMap helper.")
+```
+
+```{r figs-density, results='asis'}
+cat("\nPer-sample density on the reference. MOLM13 should be tight and restricted - it is the cell line, so it is the positive control for the projection behaving sensibly.\n\n")
+for (s in c("MOLM13", "HBDN206-MNpCT", "HBDN392-AML-MDS", "HBDN501-AML-KMT2A")) {
+  show_fig(fig(paste0("projectionFigures/density_", s, "_projectedUMAP.pdf")), NULL, width_pct = 60)
+}
+```
+
+```{r composition-tables, results='asis'}
 show_table(read_if(file.path(rd("seurat_annotated"), "07_celltype_composition_by_sampleID.csv")),
            caption = "Cell type composition by sample", n = 40)
 show_table(read_if(file.path(rd("seurat_annotated"), "10_lineage_composition_by_sampleID.csv")),
            caption = "Lineage composition by sample", n = 40)
 ```
 
-## 5.3 DSB vs CLR
+## 5.5 DSB vs CLR
 
-```{r dsb-metrics}
-di <- rd("data_integration")
-show_table(read_if(file.path(di, "06_summary_metrics.csv")),
-           caption = "Summary metrics, DSB vs CLR")
-show_table(read_if(file.path(di, "01_background_suppression.csv")),
-           caption = "Background suppression", n = 30)
-show_table(read_if(file.path(di, "02_expected_marker_specificity.csv")),
-           caption = "Expected marker specificity", n = 30)
+The pair below is the comparison in its most direct form: the same top markers, projected the
+same way, under CLR and under DSB.
+
+```{r figs-dsb-clr, results='asis'}
+show_fig(fig("projectionFigures/06_ADT_CLR_top_marker_projection.pdf"),
+  "Top markers under **CLR**.")
+show_fig(fig("projectionFigures/06_CITE_DSB_top_marker_projection.pdf"),
+  "The same markers under **DSB**.")
+show_fig(fig("DSB_vs_CLR_HBDN206-MNpCT/01_marker_mean_shift_DSB_minus_CLR.pdf"),
+  "Per-marker mean shift, DSB minus CLR, for HBDN206-MNpCT. Quantifies what the eyeball comparison above shows.")
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/01_background_suppression.pdf"),
+  "How much background DSB removes. The main argument for using DSB.")
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/02_expected_marker_specificity.pdf"),
+  "Whether expected markers land on the expected cell types.")
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/03_marker_leakage_diffusion.pdf"),
+  "Marker signal leaking into populations that should be negative.")
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/04_expected_vs_other_violin.pdf"),
+  "Expected vs other cell types, per marker.")
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/05_featureplots_CLR_vs_DSB_expected_markers.pdf"),
+  "Side-by-side feature plots. The visual summary of the whole comparison.")
 ```
 
-## 5.4 CNV calls
+```{r dsb-metrics, results='asis'}
+di <- rd("data_integration")
+show_table(read_if(file.path(di, "06_summary_metrics.csv")), caption = "Summary metrics, DSB vs CLR")
+show_table(read_if(file.path(di, "01_background_suppression.csv")), caption = "Background suppression", n = 30)
+show_table(read_if(file.path(di, "02_expected_marker_specificity.csv")), caption = "Expected marker specificity", n = 30)
+```
 
-```{r cnv}
+## 5.6 CNV calls
+
+```{r figs-cnv, results='asis'}
 ck <- file.path(rd("seurat_annotated"), "copykat_annotated")
 if (dir.exists(ck)) {
-  donors <- list.dirs(ck, recursive = FALSE, full.names = FALSE)
+  donors <- setdiff(list.dirs(ck, recursive = FALSE, full.names = FALSE), "")
   for (d in donors) {
-    f <- file.path(ck, d, "copykat_call_composition_by_sampleID.csv")
-    if (file.exists(f)) show_table(read_if(f), caption = paste("CopyKAT calls -", d))
+    cat("\n### ", d, "\n\n", sep = "")
+    show_table(read_if(file.path(ck, d, "copykat_call_composition_by_sampleID.csv")),
+               caption = paste("CopyKAT calls -", d))
+    show_fig(file.path(ck, d, "01_copykat_call_composition_by_sampleID.pdf"),
+             "Aneuploid / diploid proportions.", width_pct = 70)
+    show_fig(file.path(ck, d, "02_copykat_calls_on_projected_RNA_UMAP.pdf"),
+             "CopyKAT calls on the projected UMAP.")
+    show_fig(file.path(ck, d, "03_copykat_by_BoneMarrowMap_broad_celltype.pdf"),
+             "Calls against annotation. The check that 'aneuploid' is not just landing on one cell type for technical reasons.")
+    show_fig(file.path(ck, d, "LK1_copykat_copykat_heatmap.jpeg"),
+             "The CopyKAT CNV heatmap itself.")
   }
 } else {
-  cat("*No copykat_annotated/ directory for this run.*\n\n")
+  cat("\n*No `copykat_annotated/` directory for this run.*\n\n")
 }
+```
 
+### Numbat
+
+```{r figs-numbat, results='asis'}
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/numbat/09_numbat_compartment_on_umap.pdf"),
+  "Numbat tumour / normal compartment on the UMAP.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/numbat/10b_numbat_clone_on_umap_split_by_sample.pdf"),
+  "Numbat clone assignment per sample.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/numbat/11_numbat_compartment_by_sample_and_broad_annotation.pdf"),
+  "Compartment against annotation - checks the call is not just tracking one cell type.")
 show_table(read_if(file.path(rd("seurat_annotated"), "numbat",
                              "numbat_compartment_by_sample_and_broad_annotation.csv")),
            caption = "Numbat compartment by sample and broad annotation", n = 40)
 ```
 
-# 6. Figures
+# 6. Full figure index
 
-Every PDF, PNG and JPEG under this run's output directories, with the date it was written.
-Descriptions are hand-written for the figures that carry the argument; the rest are listed so
-the index is complete.
+Every figure written under this run's output directories. The ones above are the subset that
+carry the argument; this is the complete list so nothing is lost.
 
-```{r figure-descriptions}
-# Hand-written notes, keyed on the file name. Anything not listed here still
-# appears in the index below, just without a description.
-desc <- c(
-  "01_initial_qc_violin.pdf" = "nFeature_RNA, nCount_RNA and percent.mt by hash.ID. First look - checks no hashed sample is degraded relative to the others.",
-  "02_hto_ridgeplots.pdf" = "CLR-normalised HTO signal per hashtag. Tells you whether hashing worked at all; clean bimodality per HTO is what you want.",
-  "03_umap_demux.pdf" = "HTO global classification, assigned hash.ID, and top HTO by raw count. The third panel is the sanity check on the second.",
-  "04_umap_qc_features.pdf" = "UMI counts, detected genes and mitochondrial % on the UMAP. Localised high-MT regions are the dying-cell clusters.",
-  "05_hto_featureplots.pdf" = "Each HTO on the UMAP. Confirms hashed samples occupy distinct territory rather than smearing.",
-  "06_ADT_QC.pdf" = "ADT totals and features per cell.",
-  "07_top_ADT_markers.pdf" = "Top 5 ADT markers by mean CLR plus biotin. Biotin was added deliberately - this is the start of the biotin thread that runs to July.",
-  "08_top_ADT_cluster_markers_dotplot.pdf" = "Top ADT markers per RNA cluster.",
-  "10_top10_discriminative_ADT_plus_biotin_UMAP.pdf" = "Most discriminative ADTs with biotin overlaid.",
-  "11_biotin_expression_by_cluster_violin.pdf" = "Biotin by cluster - first look at the heterogeneity later split high vs low.",
-  "09_mapping_error_QC.pdf" = "BoneMarrowMap mapping error. Decides which cells get an annotation at all.",
-  "01_mapping_error_QC.pdf" = "Mapping error distribution, re-done on the DSB object.",
-  "01_demux_efficiency_barplot.pdf" = "Singlet/doublet/negative rates for HTO and vireo side by side. The headline comparison.",
-  "02_hto_vireo_doublet_comparison.pdf" = "Whether the two methods call the same cells doublets.",
-  "03_hto_vireo_donor_heatmap.pdf" = "HTO sample against vireo donor. Off-diagonal mass is the disagreement.",
-  "04_upset_HTO_vireo_overlap.pdf" = "UpSet of the call overlap.",
-  "06_ADT_CLR_top_marker_projection.pdf" = "Top markers under CLR. Pair with the DSB version below - this is the CLR-vs-DSB comparison in its most direct form.",
-  "06_CITE_DSB_top_marker_projection.pdf" = "The same top markers under DSB.",
-  "01_background_suppression.pdf" = "How much background DSB removes. The main argument for using DSB.",
-  "02_expected_marker_specificity.pdf" = "Whether expected markers land on the expected cell types.",
-  "03_marker_leakage_diffusion.pdf" = "Marker signal leaking into populations that should be negative.",
-  "05_featureplots_CLR_vs_DSB_expected_markers.pdf" = "Side-by-side feature plots. Visual summary of the whole comparison.",
-  "01_marker_mean_shift_DSB_minus_CLR.pdf" = "Per-marker mean shift, DSB minus CLR. Quantifies what the eyeball comparison shows.",
-  "09_numbat_compartment_on_umap.pdf" = "Numbat tumour/normal compartment on the UMAP.",
-  "10b_numbat_clone_on_umap_split_by_sample.pdf" = "Numbat clone assignment per sample.",
-  "11_numbat_compartment_by_sample_and_broad_annotation.pdf" = "Compartment against annotation - checks the call is not just tracking one cell type.",
-  "01_copykat_call_composition_by_sampleID.pdf" = "CopyKAT aneuploid/diploid proportions.",
-  "02_copykat_calls_on_projected_RNA_UMAP.pdf" = "CopyKAT calls on the projected UMAP.",
-  "03_copykat_by_BoneMarrowMap_broad_celltype.pdf" = "Calls against annotation. Checks 'aneuploid' is not landing on one cell type for technical reasons.",
-  "LK1_copykat_copykat_heatmap.jpeg" = "The CopyKAT CNV heatmap itself."
-)
-```
-
-```{r figure-index, results = "asis"}
+```{r figure-index}
 if (!is.null(files_tbl)) {
   figs <- files_tbl %>%
     filter(ext %in% c("pdf", "png", "jpeg", "jpg", "svg")) %>%
-    mutate(file = basename(rel),
-           dir  = dirname(rel),
-           note = unname(desc[file])) %>%
-    arrange(dir, file)
-
-  for (d in unique(figs$dir)) {
-    cat("\n### `", d, "`\n\n", sep = "")
-    sub <- figs %>% filter(dir == d)
-    cat("| Figure | Date | What it shows |\n|---|---|---|\n")
-    for (i in seq_len(nrow(sub))) {
-      cat("| `", sub$file[i], "` | ", format(sub$date[i]), " | ",
-          ifelse(is.na(sub$note[i]), "", sub$note[i]), " |\n", sep = "")
-    }
-    cat("\n")
-  }
-  cat("\nTotal: **", nrow(figs), " figures**, of which ",
-      sum(!is.na(figs$note)), " are described above.\n\n", sep = "")
+    transmute(directory = dirname(rel), figure = basename(rel), date = date) %>%
+    arrange(directory, figure)
+  DT::datatable(figs, rownames = FALSE, filter = "top",
+                options = list(pageLength = 15, scrollX = TRUE))
 }
 ```
 
@@ -397,27 +498,13 @@ Cluster side, from the scripts:
 R side. **No `sessionInfo()` was captured at the time**, and `scripts/` was not under version
 control until 2026-07-31, so the exact versions used in April and May 2026 are not
 recoverable. The analysis ran on the laptop against the `bioinf_scratch` mount. The session
-that renders this report is:
+that renders this report is below - treat it as the environment as it stands now, not as the
+one that produced these figures. CopyKAT and dsb were both used here but are not attached
+when this report renders.
 
 ```{r session}
-si <- sessionInfo()
-cat("```\n")
-cat(si$R.version$version.string, "\n")
-cat("Platform:", si$platform, "\n")
-cat("Running under:", si$running, "\n\n")
-pk <- c(names(si$otherPkgs), names(si$loadedOnly))
-keep <- c("Seurat", "SeuratObject", "Matrix", "harmony", "scIntegrationMetrics",
-          "edgeR", "limma", "DESeq2", "AUCell", "UCell", "fgsea", "msigdbr",
-          "dsb", "copykat", "rhdf5", "data.table", "tidyverse", "patchwork")
-have <- intersect(keep, pk)
-if (length(have)) {
-  for (p in sort(have)) cat(p, as.character(packageVersion(p)), "\n")
-}
-cat("```\n")
+sessionInfo()
 ```
-
-Treat that as the environment as it stands now, not as the environment that produced these
-figures. CopyKAT and dsb were both used here but are not attached when this report renders.
 
 # 8. Caveats
 
@@ -433,12 +520,11 @@ figures. CopyKAT and dsb were both used here but are not attached when this repo
    last edited 2026-06-09, the `data_integration/` figures are 05-06 to 05-20). Those figures
    were made by a version of that script that no longer exists.
 6. **`13.CITE_residuals.R` is not included.** It belongs to this period but writes to
-   `results/residual_cite_analysis`, which does not exist on the mount, so nothing can be
-   shown for it. See the CITE benchmarking report.
+   `results/residual_cite_analysis`, which does not exist on the mount.
 7. **`numbat/CITE_HSC_Numbat_analysis/` is not pilot-era** (2026-06-15) even though it sits
    under this run's directory. It belongs with the CITE benchmarking report.
 
-```{r drops}
+```{r drops, results='asis'}
 cat("\n**Scripts dropped when collating this folder**, and why:\n\n")
 cat("| Dropped | Reason |\n|---|---|\n")
 cat("| `backup/8.create_seurat_object.R` | Byte-identical to `scripts/6a.initial_QC.R` (step 02). |\n")
@@ -451,4 +537,4 @@ cat("| `add_cite_for_hiep.R` | One-off to hand CITE data to a colleague, no anal
 
 Note that `scripts/12.identify_cancer_cells.R` does not identify cancer cells - it is the
 BoneMarrowMap projection on the DSB object, byte-identical to `backup/10b.annotate_DSB.R`.
-The name is misleading and it is called `09.annotate_CITE_DSB.R` here.
+The name is misleading, so it is `09.annotate_CITE_DSB.R` here.
