@@ -1,3 +1,14 @@
+# ------------------------------------------------------------------
+# LK1 pilot run - step 10 of 14
+#
+# Head-to-head CITE_DSB vs ADT_CLR in a single sample (HBDN206-MNpCT).
+#
+# Frozen for the lab archive 2026-07-31 from scripts/7b.CITE_vs_DSB_comparison.R (mtime 2026-05-20).
+# md5 of the original: e58a9e89525f643cb97ce2279314f235
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
+
 suppressPackageStartupMessages({
   library(Seurat)
   library(Matrix)

@@ -1,9 +1,22 @@
 #!/usr/bin/env Rscript
-library(Seurat)
-library(Matrix)
-library(data.table)
-library(tidyverse)
-library(patchwork)
+# ------------------------------------------------------------------
+# LK1 pilot run - step 02 of 14
+#
+# Build the Seurat object from Cell Ranger, attach HTO and ADT, CLR-normalise and run HTODemux.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/6a.initial_QC.R (mtime 2026-04-29).
+# md5 of the original: 4f704f756876f2a055e00808db9b4a06
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(Matrix)
+  library(data.table)
+  library(tidyverse)
+  library(patchwork)
+})
 
 # ----------------------------
 # Paths
@@ -267,3 +280,97 @@ print(demux_summary)
 
 cat("\nSample QC summary:\n")
 print(sample_qc)
+
+
+
+######## ADT
+
+adt_dir <- file.path(
+  "../results/cite_seq_count",
+  run,
+  "adt_counts_LK1/umi_count"
+)
+
+adt_mat <- readMM(file.path(adt_dir, "matrix.mtx.gz"))
+
+adt_barcodes <- fread(
+  file.path(adt_dir, "barcodes.tsv.gz"),
+  header = FALSE
+)$V1
+
+adt_features <- fread(
+  file.path(adt_dir, "features.tsv.gz"),
+  header = FALSE
+)
+
+# usually feature name in V2, fallback to V1
+adt_feature_names <- if (ncol(adt_features) >= 2) {
+  adt_features$V2
+} else {
+  adt_features$V1
+}
+
+adt_barcodes <- paste0(adt_barcodes, "-1")
+
+rownames(adt_mat) <- make.unique(adt_feature_names)
+colnames(adt_mat) <- adt_barcodes
+
+# Match cells
+common_adt <- intersect(colnames(seu), colnames(adt_mat))
+
+cat("ADT shared cells:", length(common_adt), "\n")
+
+adt_mat <- adt_mat[, common_adt, drop = FALSE]
+
+# subset Seurat object to shared cells
+seu <- subset(seu, cells = common_adt)
+
+# add ADT assay
+seu[["ADT"]] <- CreateAssayObject(counts = adt_mat)
+
+DefaultAssay(seu) <- "ADT"
+
+seu <- NormalizeData(
+  seu,
+  normalization.method = "CLR",
+  margin = 2
+)
+
+DefaultAssay(seu) <- "ADT"
+
+seu$ADT_total <- Matrix::colSums(GetAssayData(seu, assay = "ADT", layer = "counts"))
+seu$ADT_features <- Matrix::colSums(GetAssayData(seu, assay = "ADT", layer = "counts") > 0)
+
+#######
+DefaultAssay(seu) <- "ADT"
+
+adt_counts <- GetAssayData(seu, assay = "ADT", layer = "data")
+
+adt_means <- rowMeans(as.matrix(adt_counts))
+
+top5_adt <- sort(adt_means, decreasing = TRUE)[1:7]
+top5_adt<-top5_adt[c(1,4,5,6,7)]
+print(top5_adt)
+biotin_feature <- grep(
+  "biotin",
+  rownames(seu[["ADT"]]),
+  ignore.case = TRUE,
+  value = TRUE
+)
+
+features_to_plot <- unique(c(
+  names(top5_adt),
+  biotin_feature
+))
+
+pdf(file.path(out_dir, "07_top_ADT_markers.pdf"), width = 12, height = 8)
+print(
+  FeaturePlot(
+    seu,
+    features = features_to_plot,
+    reduction = "umap",
+    ncol = 3
+  )
+)
+dev.off()
+

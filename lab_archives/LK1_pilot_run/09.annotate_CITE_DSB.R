@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 09 of 14
+#
+# Same projection on the CITE_DSB object. Byte-identical to scripts/backup/10b.annotate_DSB.R.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/12.identify_cancer_cells.R (mtime 2026-05-06).
+# md5 of the original: ce731ec46ad4e59ccd1c98e5f77bf975
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)

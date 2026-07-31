@@ -1,4 +1,14 @@
 #!/bin/bash
+# ------------------------------------------------------------------
+# LK1 pilot run - step 01 of 14
+#
+# Count R1 reads per library straight off the FASTQ. The denominator for everything else.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/0.count_reads.sh (mtime 2026-05-05).
+# md5 of the original: e2255232a77cca01925680c556f56fce
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 #SBATCH -J fastq_count
 #SBATCH --partition=rhel_short

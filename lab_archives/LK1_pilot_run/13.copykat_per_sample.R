@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 13 of 14
+#
+# CopyKAT re-run per donor. This is what produced the per-donor output directories.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/9a.copykat_perSample.R (mtime 2026-05-19).
+# md5 of the original: 567110f2009608a27f22664bad1e0c52
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)
@@ -446,3 +456,4 @@ cat("\nDone.\n")
 cat("CopyKAT output:", copykat_out, "\n")
 cat("Saved Seurat object:", file.path(copykat_out, "query_with_copykat_calls.rds"), "\n")
 cat("Saved bundle:", file.path(copykat_out, "copykat_bundle.rds"), "\n")
+

@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 07 of 14
+#
+# Load and visualise the BoneMarrowMap Symphony reference, set the uwot path, first projection.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/backup/10.annotate.R (mtime 2026-05-05).
+# md5 of the original: 06d41e155729a041bd60c2e5e7abbf95
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)
@@ -606,3 +616,4 @@ saveRDS(
   analysis_bundle,
   file.path(out_dir, "analysis_bundle.rds")
 )
+

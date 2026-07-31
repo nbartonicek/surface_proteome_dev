@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 12 of 14
+#
+# CopyKAT on all cells pooled. First CNV pass.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/9.copykat.R (mtime 2026-05-11).
+# md5 of the original: bf86300348b3d0fe4d1f7df4a2606eb8
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)
@@ -380,3 +390,4 @@ cat("\nDone.\n")
 cat("CopyKAT output:", copykat_out, "\n")
 cat("Saved Seurat object:", file.path(copykat_out, "query_with_copykat_calls.rds"), "\n")
 cat("Saved bundle:", file.path(copykat_out, "copykat_bundle.rds"), "\n")
+

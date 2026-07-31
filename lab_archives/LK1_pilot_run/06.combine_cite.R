@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 06 of 14
+#
+# Fold the CITE assays into one object and write the analysis_bundle the later steps read.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/backup/11.combine_cite.R (mtime 2026-05-03).
+# md5 of the original: c3bd168321fa1e8cf6eec5e1c6c1a960
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)

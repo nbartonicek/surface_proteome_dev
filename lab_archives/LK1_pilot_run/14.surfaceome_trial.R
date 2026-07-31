@@ -1,3 +1,14 @@
+# ------------------------------------------------------------------
+# LK1 pilot run - step 14 of 14
+#
+# First surfaceome pass - surfaceome-only UMAP on the Numbat-annotated object. Exploratory, saves nothing.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/14.surfaceome_trial.R (mtime 2026-05-25).
+# md5 of the original: e19c220260e1ad25dece280330c450f6
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
+
 suppressPackageStartupMessages({
   library(Seurat)
   library(tidyverse)
@@ -402,6 +413,7 @@ write.csv(
   "surfaceome_cluster_markers.csv",
   row.names = FALSE
 )
+
 
 
 

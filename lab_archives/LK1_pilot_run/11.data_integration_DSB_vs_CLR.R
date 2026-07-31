@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 11 of 14
+#
+# Full DSB-vs-CLR evaluation - background suppression, marker specificity, leakage - plus composition by sample.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/12.data_integration.R (mtime 2026-06-09).
+# md5 of the original: d74562b8de6174aaec93ee5502c4abbd
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)

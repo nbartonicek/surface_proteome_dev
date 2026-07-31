@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 04 of 14
+#
+# CITE-seq QC on the emptyDrops-called cells: raw ADT totals, CLR, marker distributions, overlays.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/backup/7a.CITE_qc.R (mtime 2026-05-05).
+# md5 of the original: e28022a48c51102902809485483bf92d
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)
@@ -908,3 +918,4 @@ print(markers_to_plot)
 
 cat("\nDSB markers selected for plots:\n")
 print(markers_dsb)
+

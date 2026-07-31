@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 03 of 14
+#
+# Add vireo donor calls to the object, cross-tabulate against HTO, and run doublet detection.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/backup/6.demux.R (mtime 2026-05-05).
+# md5 of the original: 8d35cb95e45928ba6d286bff8529b0e0
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)

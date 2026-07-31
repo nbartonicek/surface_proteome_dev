@@ -1,4 +1,14 @@
 #!/usr/bin/env Rscript
+# ------------------------------------------------------------------
+# LK1 pilot run - step 05 of 14
+#
+# DSB normalisation using raw background droplets, with random IgG-control subsampling.
+#
+# Frozen for the lab archive 2026-07-31 from scripts/7c.evaluate_DSB.R (mtime 2026-05-22).
+# md5 of the original: 58a0f44be40658ffc50cc0b542e73267
+# Body is unmodified - only this header was added, so the paths inside
+# are still the ones that ran (relative to scripts/, i.e. ../results/...).
+# ------------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library(Seurat)
@@ -256,3 +266,4 @@ ggsave(
 
 message("Done.")
 message("Output written to: ", out_dir)
+
