@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 04 of 14
+# LK1 pilot run - step 06 of 18
 #
 # CITE-seq QC on the emptyDrops-called cells: raw ADT totals, CLR, marker distributions, overlays.
 #

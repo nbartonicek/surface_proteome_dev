@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 12 of 14
+# LK1 pilot run - step 15 of 18
 #
 # CopyKAT on all cells pooled. First CNV pass.
 #

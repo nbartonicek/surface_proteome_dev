@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 13 of 14
+# LK1 pilot run - step 16 of 18
 #
 # CopyKAT re-run per donor. This is what produced the per-donor output directories.
 #

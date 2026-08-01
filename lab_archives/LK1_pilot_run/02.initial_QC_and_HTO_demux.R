@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 02 of 14
+# LK1 pilot run - step 02 of 18
 #
 # Build the Seurat object from Cell Ranger, attach HTO and ADT, CLR-normalise and run HTODemux.
 #

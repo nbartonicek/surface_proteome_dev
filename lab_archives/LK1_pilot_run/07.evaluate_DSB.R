@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 05 of 14
+# LK1 pilot run - step 07 of 18
 #
 # DSB normalisation using raw background droplets, with random IgG-control subsampling.
 #

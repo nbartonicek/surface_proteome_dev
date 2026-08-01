@@ -1,8 +1,8 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 11 of 14
+# LK1 pilot run - step 14 of 18
 #
-# Full DSB-vs-CLR evaluation - background suppression, marker specificity, leakage - plus composition by sample.
+# Composition by sample, DSB protein-space UMAP, and CopyKAT calls against annotation. Writes data_integration/ 07-11.
 #
 # Frozen for the lab archive 2026-07-31 from scripts/12.data_integration.R (mtime 2026-06-09).
 # md5 of the original: d74562b8de6174aaec93ee5502c4abbd

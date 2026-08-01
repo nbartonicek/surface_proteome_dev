@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 08 of 14
+# LK1 pilot run - step 10 of 18
 #
 # Project the query onto BoneMarrowMap using the ADT/CLR object. Writes seurat_annotated/.
 #

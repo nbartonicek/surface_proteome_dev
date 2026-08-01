@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 09 of 14
+# LK1 pilot run - step 11 of 18
 #
 # Same projection on the CITE_DSB object. Byte-identical to scripts/backup/10b.annotate_DSB.R.
 #
