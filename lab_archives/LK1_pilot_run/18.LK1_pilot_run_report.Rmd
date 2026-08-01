@@ -154,6 +154,60 @@ fig <- function(pattern) {
   hit <- files_tbl$path[grepl(pattern, files_tbl$rel, fixed = TRUE)]
   if (!length(hit)) NA_character_ else hit[1]
 }
+
+# ---------------------------------------------------------------
+# Every figure this report imports, resolved up front so the header can state
+# when the earliest of them was produced. Keep this list in step with the
+# show_fig() calls in section 5 - a pattern listed here that is not shown below
+# (or vice versa) only shifts the "First generated" date, it does not drop a
+# figure from the report.
+# ---------------------------------------------------------------
+FIG_PATTERNS <- c(
+  "seurat_demux/260423_VH01624_453_222HWMYNX/01_initial_qc_violin.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/02_hto_ridgeplots.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/03_umap_demux.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/05_hto_featureplots.pdf",
+  "demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/01_demux_efficiency_barplot.pdf",
+  "demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/04_upset_HTO_vireo_overlap.pdf",
+  "genotype_demux/260423_VH01624_453_222HWMYNX/LK1-GEX/vireo/fig_GT_distance_estimated.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/06_ADT_QC.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/07_top_ADT_markers.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/08_top_ADT_cluster_markers_dotplot.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/10_top10_discriminative_ADT_plus_biotin_UMAP.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/11_biotin_expression_by_cluster_violin.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/01_mapping_error_QC.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/02_projected_predicted_celltypes_pass_only.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/03_projected_samples_pass_only.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/04_projected_pseudotime_pass_only.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/05_projection_by_sampleID_BMM_helper_manual_split.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/08_celltype_composition_by_sampleID_stacked_bar.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/11_lineage_composition_by_sampleID.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/13_specific_celltype_composition_by_sampleID.pdf",
+  "projectionFigures/06_ADT_CLR_top_marker_projection.pdf",
+  "DSB_vs_CLR_HBDN206-MNpCT/01_marker_mean_shift_DSB_minus_CLR.pdf",
+  "data_integration/260423_VH01624_453_222HWMYNX/01_background_suppression.pdf",
+  "data_integration/260423_VH01624_453_222HWMYNX/02_expected_marker_specificity.pdf",
+  "data_integration/260423_VH01624_453_222HWMYNX/03_marker_leakage_diffusion.pdf"
+)
+
+report_figs <- unname(vapply(FIG_PATTERNS, fig, character(1)))
+
+# the per-donor CopyKAT figures, which are resolved dynamically in section 5.6
+ck_dir <- file.path(rd("seurat_annotated"), "copykat_annotated")
+if (dir.exists(ck_dir)) {
+  for (d in setdiff(list.dirs(ck_dir, recursive = FALSE, full.names = TRUE), "")) {
+    report_figs <- c(report_figs, file.path(d, c(
+      "01_copykat_call_composition_by_sampleID.pdf",
+      "02_copykat_calls_on_projected_RNA_UMAP.pdf",
+      "03_copykat_by_BoneMarrowMap_broad_celltype.pdf",
+      "LK1_copykat_copykat_heatmap.jpeg")))
+  }
+}
+
+report_figs <- report_figs[!is.na(report_figs) & file.exists(report_figs)]
+first_generated <- if (length(report_figs)) {
+  min(as.Date(file.info(report_figs)$mtime))
+} else NA
 ```
 
 **Run:** `` `r run` ``
@@ -161,8 +215,11 @@ fig <- function(pattern) {
 **Status:** superseded - LK1 was re-sequenced as `260522_VH01624_461_222JLJVNX`. Everything
 below is the first pass on the pilot data and should not be quoted as a current result.
 
-**Generated:** `r Sys.Date()` by `18.LK1_pilot_run_report.Rmd`, from the outputs of steps
-01-17 in this folder.
+**First generated:** `r if (is.na(first_generated)) "n/a" else format(first_generated)` - the
+earliest of the `r length(report_figs)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `18.LK1_pilot_run_report.Rmd`, from the outputs of
+steps 01-17 in this folder.
 
 This is the first run of the project and most of the pipeline was worked out on it. Several
 of the scripts that produced these outputs have since been renumbered or replaced; the copies
@@ -431,8 +488,8 @@ if (dir.exists(ck)) {
 | Cell Ranger | 10.0.0 | `~/tools/cellranger-10.0.0/cellranger` |
 | Cell Ranger annotation | `refdata-gex-GRCh38-2024-A` | `annotation/` |
 | CITE-seq-Count | to confirm | `scripts/3.hto_count.sbatch`, `4.cite_seq_count.sbatch` |
-| cellsnp-lite | to confirm | `04.cellSNP_vireo.sh` |
-| vireo | to confirm | `04.cellSNP_vireo.sh` |
+| cellsnp-lite | 1.2.3 (htslib 1.23.1) | `cellsnp_env`, used by `04.cellSNP_vireo.sh` |
+| vireo (vireoSNP) | to confirm | `cellsnp_env`, used by `04.cellSNP_vireo.sh` |
 
 R side, the session that renders this report:
 
