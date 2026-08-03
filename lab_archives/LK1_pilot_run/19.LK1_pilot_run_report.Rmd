@@ -37,13 +37,60 @@ params:
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
 
 suppressPackageStartupMessages({
-  library(dplyr)
-  library(tidyr)
-  library(readr)
-  library(stringr)
-  library(purrr)
-  library(knitr)
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
 })
+
+theme_set(theme_bw(base_size = 12))
+
+# ---------------------------------------------------------------
+# Bespoke color palettes, copied from 21.run_qc_report.Rmd, which took them from
+# nextflow/bin/annotate.R - so composition figures here match the pipeline's own.
+# ---------------------------------------------------------------
+lineage_cols <- c(
+  "Stem / progenitor" = "#1B9E77", "Myeloid / DC" = "#E31A1C",
+  "Lymphoid" = "#2171B5", "Erythroid" = "#C51B8A", "Other" = "grey70"
+)
+
+celltype_order <- rev(c(
+  "HSC MPP", "LMPP", "MEP", "Megakaryocyte Precursor", "Early GMP", "Late GMP",
+  "Cycling Progenitor", "EoBasoMast Precursor",
+  "Pro-Monocyte", "Monocyte", "cDC", "pDC",
+  "Early Lymphoid", "Pro-B", "Pre-B", "B", "Naive T", "CD4 Memory T", "CD8 Memory T",
+  "NK", "Plasma Cell", "Early Erythroid", "Late Erythroid"
+))
+
+celltype_cols <- c(
+  "HSC MPP" = "#1B9E77", "LMPP" = "#66C2A5", "MEP" = "#B2DF8A", "GMP" = "#33A02C",
+  "Early GMP" = "#A6D854", "Late GMP" = "#006D2C", "Cycling Progenitor" = "#00441B",
+  "EoBasoMast Precursor" = "#8DD3C7", "Megakaryocyte Precursor" = "#4DAF4A",
+  "Monocyte" = "#E31A1C", "Pro-Monocyte" = "#FB6A4A", "cDC" = "#FD8D3C", "pDC" = "#FCBBA1",
+  "Naive T" = "#2171B5", "CD4 Memory T" = "#6BAED6", "CD8 Memory T" = "#08519C",
+  "NK" = "#54278F", "Early Lymphoid" = "#9E9AC8", "B" = "#3182BD", "Pre-B" = "#9ECAE1",
+  "Pro-B" = "#C6DBEF", "Plasma Cell" = "#756BB1",
+  "Early Erythroid" = "#F768A1", "Late Erythroid" = "#C51B8A"
+)
+
+# The lineage mapping annotate.R uses. It keys on predicted_CellType_Broad, which
+# is why it must be applied to the broad table, not the fine one - see section 5.4.
+assign_lineage <- function(celltype) {
+  case_when(
+    celltype %in% c("HSC MPP", "LMPP", "MEP", "GMP", "Early GMP", "Late GMP",
+                    "Cycling Progenitor", "EoBasoMast Precursor",
+                    "Megakaryocyte Precursor") ~ "Stem / progenitor",
+    celltype %in% c("Monocyte", "Pro-Monocyte", "cDC", "pDC") ~ "Myeloid / DC",
+    celltype %in% c("Naive T", "CD4 Memory T", "CD8 Memory T", "NK",
+                    "Early Lymphoid", "B", "Pre-B", "Pro-B", "Plasma Cell") ~ "Lymphoid",
+    celltype %in% c("Early Erythroid", "Late Erythroid") ~ "Erythroid",
+    TRUE ~ "Other"
+  )
+}
+
+extend_palette <- function(base_cols, all_levels) {
+  missing <- setdiff(all_levels, names(base_cols))
+  if (length(missing)) base_cols <- c(base_cols, setNames(scales::hue_pal()(length(missing)), missing))
+  base_cols
+}
 
 HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
 
@@ -171,9 +218,6 @@ FIG_PATTERNS <- c(
   "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/03_projected_samples_pass_only.pdf",
   "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/04_projected_pseudotime_pass_only.pdf",
   "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/05_projection_by_sampleID_BMM_helper_manual_split.pdf",
-  "seurat_annotated/260423_VH01624_453_222HWMYNX/08_celltype_composition_by_sampleID_stacked_bar.pdf",
-  "seurat_annotated/260423_VH01624_453_222HWMYNX/11_lineage_composition_by_sampleID.pdf",
-  "seurat_annotated/260423_VH01624_453_222HWMYNX/13_specific_celltype_composition_by_sampleID.pdf",
   "projectionFigures/06_ADT_CLR_top_marker_projection.pdf",
   "DSB_vs_CLR_HBDN206-MNpCT/01_marker_mean_shift_DSB_minus_CLR.pdf",
   "data_integration/260423_VH01624_453_222HWMYNX/01_background_suppression.pdf",
@@ -405,13 +449,69 @@ show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/05
   "Per-sample projection using the BoneMarrowMap helper.")
 ```
 
-```{r figs-composition, results='asis'}
-show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/08_celltype_composition_by_sampleID_stacked_bar.pdf"),
-  "Broad cell type composition per sample.")
-show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/11_lineage_composition_by_sampleID.pdf"),
-  "Lineage composition per sample.")
-show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/13_specific_celltype_composition_by_sampleID.pdf"),
-  "Fine-grained cell type composition per sample.")
+Composition is recomputed here from the exported tables rather than taken from the figures the
+pilot scripts saved. Those figures keyed the lineage mapping on the *fine* BoneMarrowMap labels
+(`HSC`, `MPP-MyLy`, `MPP-MkEry`) while the mapping in `annotate.R` expects the *broad* ones
+(`HSC MPP`, `LMPP`), so nearly every cell fell through to "Other" - the saved
+`10_lineage_composition_by_sampleID.csv` puts 94% of HBDN206-MNpCT there. Reading the broad
+table instead fixes that, and lets the bars use the pipeline's own palette.
+
+```{r composition-broad, fig.height=5}
+comp_broad <- read_if(file.path(rd("data_integration"), "broad_celltype_composition_by_sample.csv"))
+if (!is.null(comp_broad)) {
+  cb <- comp_broad %>%
+    mutate(predicted_CellType_Broad = ifelse(is.na(predicted_CellType_Broad),
+                                             "Unannotated", predicted_CellType_Broad))
+  lev <- intersect(celltype_order, unique(cb$predicted_CellType_Broad))
+  lev <- c(setdiff(unique(cb$predicted_CellType_Broad), lev), lev)
+  cb$predicted_CellType_Broad <- factor(cb$predicted_CellType_Broad, levels = lev)
+  print(
+    ggplot(cb, aes(sampleID, percent, fill = predicted_CellType_Broad)) +
+      geom_col(width = 0.7) +
+      scale_fill_manual(values = extend_palette(c(celltype_cols, "Unannotated" = "grey80"), lev)) +
+      labs(x = NULL, y = "% of cells", fill = "Broad cell type",
+           title = "Broad cell type composition per sample") +
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+  )
+}
+```
+
+```{r composition-lineage, fig.height=4.5}
+if (!is.null(comp_broad)) {
+  lin <- comp_broad %>%
+    filter(!is.na(predicted_CellType_Broad)) %>%
+    mutate(lineage = assign_lineage(predicted_CellType_Broad)) %>%
+    group_by(sampleID, lineage) %>%
+    summarise(percent = sum(percent), .groups = "drop") %>%
+    mutate(lineage = factor(lineage, levels = names(lineage_cols)))
+  print(
+    ggplot(lin, aes(sampleID, percent, fill = lineage)) +
+      geom_col(width = 0.7) +
+      scale_fill_manual(values = lineage_cols) +
+      labs(x = NULL, y = "% of cells", fill = "Lineage",
+           title = "Lineage composition per sample") +
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+  )
+}
+```
+
+```{r composition-fine, fig.height=7}
+comp_fine <- read_if(file.path(rd("data_integration"), "detailed_celltype_composition_by_sample.csv"))
+if (!is.null(comp_fine)) {
+  cf <- comp_fine %>%
+    filter(!is.na(predicted_CellType)) %>%
+    mutate(predicted_CellType = factor(predicted_CellType, levels = sort(unique(predicted_CellType))))
+  print(
+    ggplot(cf, aes(sampleID, percent, fill = predicted_CellType)) +
+      geom_col(width = 0.7) +
+      scale_fill_manual(values = extend_palette(celltype_cols, levels(cf$predicted_CellType))) +
+      labs(x = NULL, y = "% of cells", fill = "Cell type",
+           title = "Fine-grained cell type composition per sample") +
+      guides(fill = guide_legend(ncol = 2, keyheight = unit(9, "pt"))) +
+      theme(axis.text.x = element_text(angle = 30, hjust = 1),
+            legend.text = element_text(size = 7))
+  )
+}
 ```
 
 ## 5.5 DSB vs CLR
