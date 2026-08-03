@@ -17,14 +17,39 @@
 #
 # pandoc is not on PATH here; it lives inside the RStudio bundle.
 #
+# There is also a .docx / .rtf route, for pasting the report straight into the
+# LabArchives rich text editor rather than attaching a file. Both carry the
+# figures (all 37 land in the file), which the HTML route does not survive -
+# rich text editors generally strip the base64 data: URIs the self-contained
+# HTML uses. Of the two, .docx is the one to try first: copying from Word puts
+# both RTF and HTML on the clipboard, which is what web editors handle best.
+#
+# These are converted from the rendered HTML, not from a second knit, so the
+# content is identical to the HTML and the Rmd does not need a word_document
+# entry. Word styling is plainer than the flatly HTML - pandoc maps to Word's
+# own styles - but the text, tables and figures all come through.
+#
 # Usage:
 #   ./render_report.sh                      # render HTML then PDF
 #   ./render_report.sh --pdf-only           # skip the render, just redo the PDF
+#   ./render_report.sh --docx               # ... and write .docx for pasting
+#   ./render_report.sh --rtf                # ... and write .rtf for pasting
+#   ./render_report.sh --pdf-only --docx    # no re-render, refresh PDF + docx
 # ------------------------------------------------------------------
 
 set -uo pipefail
 
 cd "$(dirname "$0")" || exit 1
+
+PDF_ONLY=0; WANT_DOCX=0; WANT_RTF=0
+for a in "$@"; do
+  case "$a" in
+    --pdf-only) PDF_ONLY=1 ;;
+    --docx)     WANT_DOCX=1 ;;
+    --rtf)      WANT_RTF=1 ;;
+    *) echo "unknown option: $a"; exit 1 ;;
+  esac
+done
 
 RMD="19.LK1_pilot_run_report.Rmd"
 OUT="LK1_pilot_run_report"
@@ -36,7 +61,7 @@ CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # 1. Rmd -> HTML
 # ----------------------------
 
-if [ "${1:-}" != "--pdf-only" ]; then
+if [ "$PDF_ONLY" -eq 0 ]; then
   echo "rendering $RMD -> $OUT.html"
   Rscript -e "rmarkdown::render('$RMD', output_file='$OUT.html', quiet=TRUE)" || {
     echo "render failed"; exit 1; }
@@ -69,6 +94,24 @@ if [ -f "$OUT.pdf" ]; then
 else
   echo "PDF conversion produced nothing"
   exit 1
+fi
+
+# ----------------------------
+# 4. Optional rich text, for pasting into the LabArchives entry
+# ----------------------------
+
+PANDOC="$RSTUDIO_PANDOC/pandoc"
+
+if [ "$WANT_DOCX" -eq 1 ]; then
+  echo "converting $OUT.html -> $OUT.docx"
+  "$PANDOC" "$OUT.html" -o "$OUT.docx" && \
+    echo "  $OUT.docx  $(du -h "$OUT.docx" | cut -f1), $(unzip -l "$OUT.docx" | grep -c 'word/media/') figures"
+fi
+
+if [ "$WANT_RTF" -eq 1 ]; then
+  echo "converting $OUT.html -> $OUT.rtf"
+  "$PANDOC" "$OUT.html" -o "$OUT.rtf" --embed-resources && \
+    echo "  $OUT.rtf  $(du -h "$OUT.rtf" | cut -f1), $(grep -o '\\pict' "$OUT.rtf" | wc -l | tr -d ' ') figures"
 fi
 
 echo "done."
