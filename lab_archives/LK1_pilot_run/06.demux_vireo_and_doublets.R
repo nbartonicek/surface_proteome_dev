@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 05 of 18
+# LK1 pilot run - step 06 of 19
 #
 # Add vireo donor calls to the object, cross-tabulate against HTO, and run doublet detection.
 #

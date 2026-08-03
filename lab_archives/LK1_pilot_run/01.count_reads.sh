@@ -1,6 +1,6 @@
 #!/bin/bash
 # ------------------------------------------------------------------
-# LK1 pilot run - step 01 of 18
+# LK1 pilot run - step 01 of 19
 #
 # Count R1 reads per library straight off the FASTQ. The denominator for everything else.
 #

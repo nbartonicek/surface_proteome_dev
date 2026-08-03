@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------
-# LK1 pilot run - step 17 of 18
+# LK1 pilot run - step 18 of 19
 #
 # First surfaceome pass - surfaceome-only UMAP on the Numbat-annotated object. Exploratory, saves nothing.
 #

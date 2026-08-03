@@ -17,10 +17,10 @@ params:
 
 <!--
 # ------------------------------------------------------------------
-# LK1 pilot run - step 18 of 18
+# LK1 pilot run - step 19 of 19
 #
 # Renders the lab archive report for the pilot run from the outputs of
-# steps 01-17. Everything that can be read off disk is read off disk, so
+# steps 01-18. Everything that can be read off disk is read off disk, so
 # the report cannot drift from the results: tables come from the summary
 # CSVs each step wrote, figures are rasterised straight out of the PDFs
 # those steps produced, and the timeline is built from file modification
@@ -34,7 +34,7 @@ params:
 # so PDF figures render inline rather than being named as paths.
 #
 # Render with:
-#   Rscript -e 'rmarkdown::render("18.LK1_pilot_run_report.Rmd")'
+#   Rscript -e 'rmarkdown::render("19.LK1_pilot_run_report.Rmd")'
 # pandoc is not on PATH on this laptop; if rendering outside RStudio, point
 # at the one inside the RStudio bundle first:
 #   export RSTUDIO_PANDOC=/Applications/RStudio.app/Contents/Resources/app/quarto/bin/tools/aarch64
@@ -218,8 +218,8 @@ below is the first pass on the pilot data and should not be quoted as a current 
 **First generated:** `r if (is.na(first_generated)) "n/a" else format(first_generated)` - the
 earliest of the `r length(report_figs)` figures shown below.
 
-**Report generated:** `r Sys.Date()` by `18.LK1_pilot_run_report.Rmd`, from the outputs of
-steps 01-17 in this folder.
+**Report generated:** `r Sys.Date()` by `19.LK1_pilot_run_report.Rmd`, from the outputs of
+steps 01-18 in this folder.
 
 This is the first run of the project and most of the pipeline was worked out on it. Several
 of the scripts that produced these outputs have since been renumbered or replaced; the copies
@@ -281,7 +281,8 @@ if (!is.null(files_tbl)) {
     group_by(dir) %>%
     summarise(first = min(date), last = max(date), files = n(), .groups = "drop") %>%
     arrange(first) %>%
-    show_table(caption = paste0("Output directories under results/&lt;dir&gt;/", run, "/"))
+    show_table(caption = paste0(
+      "Output directories under /scratch/users/nbartonicek/projects/amgen/results/", run))
 }
 ```
 
@@ -301,34 +302,35 @@ if (!is.null(files_tbl)) {
 
 # 4. What was run, in order
 
-The scripts in this folder are numbered in execution order. Steps 03 and 04 were later
-re-pointed at the re-sequenced run, so their frozen copies carry `run = 260522` - set it back
-to the pilot run to reproduce. Their pilot outputs are dated 2026-05-01 to 05-04, three weeks
-before 260522 existed.
+The scripts in this folder are numbered in execution order and every step of the pilot is
+accounted for. Steps 02, 04 and 05 were later re-pointed at a subsequent run, so their frozen
+copies carry the wrong `run` - set it back to the pilot run to reproduce. Each says so in its
+header. The re-pointing of step 02 was incomplete, which is part of how it was identified:
+`RUN` and `SAMPLE_SHORT` name LK2 while `SAMPLE` is still `LK1-GEX_S5`.
 
 | Step | Script | What it does |
 |---|---|---|
-| - | *(not preserved)* | Cell Ranger count, `~/tools/cellranger-10.0.0/cellranger`. Step 02 reads its `filtered_feature_bc_matrix`. |
 | 01 | `01.count_reads.sh` | R1 read counts per library. |
-| 02 | `02.initial_QC_and_HTO_demux.R` | Seurat object, HTO + ADT attached, CLR, `HTODemux(positive.quantile = 0.80)`. |
-| 03 | `03.emptydrops.R` | emptyDrops on the raw matrix, FDR <= 0.01. Produces the barcode whitelist. |
-| 04 | `04.cellSNP_vireo.sh` | cellsnp-lite pileup over those barcodes, then vireo with `N_DONORS=4`. |
-| 05 | `05.demux_vireo_and_doublets.R` | Vireo calls onto the object, HTO cross-tab, doublet detection. |
-| 06 | `06.CITE_qc.R` | CITE QC on emptyDrops cells: raw ADT, CLR, marker distributions, overlays. |
-| 07 | `07.evaluate_DSB.R` | DSB using raw background droplets, with IgG-control subsampling. |
-| 08 | `08.combine_cite.R` | Folds CITE assays into one object, writes the `analysis_bundle`. |
-| 09 | `09.annotate_reference_setup.R` | BoneMarrowMap Symphony reference, uwot path, first projection. |
-| 10 | `10.annotate_ADT_CLR.R` | Projection on the ADT/CLR object. |
-| 11 | `11.annotate_CITE_DSB.R` | Same projection on the CITE_DSB object. |
-| 12 | `12.compare_DSB_vs_CLR_one_sample.R` | DSB vs CLR in one sample (HBDN206-MNpCT). |
-| 13 | `13.compare_DSB_vs_CLR_all_samples.R` | DSB vs CLR across all samples. Writes `data_integration/` 01-06. |
-| 14 | `14.data_integration_composition.R` | Composition by sample, DSB protein-space UMAP, CopyKAT against annotation. Writes `data_integration/` 07-11. |
-| 15 | `15.copykat_pooled.R` | CopyKAT, all cells pooled. |
-| 16 | `16.copykat_per_sample.R` | CopyKAT per donor. |
-| 17 | `17.surfaceome_trial.R` | First surfaceome pass. Exploratory, saves nothing. |
-| 18 | `18.LK1_pilot_run_report.Rmd` | This report. |
+| 02 | `02.cellranger.sh` | Cell Ranger 10.0.0 count on the GEX library. |
+| 03 | `03.initial_QC_and_HTO_demux.R` | Seurat object, HTO + ADT attached, CLR, `HTODemux(positive.quantile = 0.80)`. |
+| 04 | `04.emptydrops.R` | emptyDrops on the raw matrix, FDR <= 0.01. Produces the barcode whitelist. |
+| 05 | `05.cellSNP_vireo.sh` | cellsnp-lite pileup over those barcodes, then vireo with `N_DONORS=4`. |
+| 06 | `06.demux_vireo_and_doublets.R` | Vireo calls onto the object, HTO cross-tab, doublet detection. |
+| 07 | `07.CITE_qc.R` | CITE QC on emptyDrops cells: raw ADT, CLR, marker distributions, overlays. |
+| 08 | `08.evaluate_DSB.R` | DSB using raw background droplets, with IgG-control subsampling. |
+| 09 | `09.combine_cite.R` | Folds CITE assays into one object, writes the `analysis_bundle`. |
+| 10 | `10.annotate_reference_setup.R` | BoneMarrowMap Symphony reference, uwot path, first projection. |
+| 11 | `11.annotate_ADT_CLR.R` | Projection on the ADT/CLR object. |
+| 12 | `12.annotate_CITE_DSB.R` | Same projection on the CITE_DSB object. |
+| 13 | `13.compare_DSB_vs_CLR_one_sample.R` | DSB vs CLR in one sample (HBDN206-MNpCT). |
+| 14 | `14.compare_DSB_vs_CLR_all_samples.R` | DSB vs CLR across all samples. Writes `data_integration/` 01-06. |
+| 15 | `15.data_integration_composition.R` | Composition by sample, DSB protein-space UMAP, CopyKAT against annotation. Writes `data_integration/` 07-11. |
+| 16 | `16.copykat_pooled.R` | CopyKAT, all cells pooled. |
+| 17 | `17.copykat_per_sample.R` | CopyKAT per donor. |
+| 18 | `18.surfaceome_trial.R` | First surfaceome pass. Exploratory, saves nothing. |
+| 19 | `19.LK1_pilot_run_report.Rmd` | This report. |
 
-Key parameters in step 02: `CreateSeuratObject(min.cells = 3, min.features = 50)`,
+Key parameters in step 03: `CreateSeuratObject(min.cells = 3, min.features = 50)`,
 `percent.mt` from `^MT-`, HTO and ADT normalised CLR with `margin = 2`,
 `HTODemux(positive.quantile = 0.80)`, RNA scaled regressing `percent.mt`, PCA and UMAP on
 `dims = 1:30`, `FindClusters(resolution = 0.5)`.
@@ -418,12 +420,12 @@ specificity work below.
 show_fig(fig("projectionFigures/06_ADT_CLR_top_marker_projection.pdf"),
   "Top markers under CLR, on the projected UMAP.")
 show_fig(fig("DSB_vs_CLR_HBDN206-MNpCT/01_marker_mean_shift_DSB_minus_CLR.pdf"),
-  "Per-marker mean shift, DSB minus CLR, for HBDN206-MNpCT (step 12).")
+  "Per-marker mean shift, DSB minus CLR, for HBDN206-MNpCT (step 13).")
 show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/01_background_suppression.pdf"),
   "How much background DSB removes, measured on the isotype / background markers. The main argument for using DSB.")
 show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/02_expected_marker_specificity.pdf"),
   paste("Whether expected markers land on the expected cell types, scored against a",
-        "hand-curated panel defined in step 13: CD34 / CD117 / CD133 for stem-progenitor,",
+        "hand-curated panel defined in step 14: CD34 / CD117 / CD133 for stem-progenitor,",
         "CD33 / CD14 / CD163 / CD11b for myeloid-DC, CD4 / CD8 / CD19 / CD20 / BCMA /",
         "Syndecan-1 for lymphoid, and CD71 for erythroid. For each marker the script takes",
         "the **mean signal in its expected broad cell type minus the median across all",
@@ -452,7 +454,7 @@ show_table(read_if(file.path(di, "03_marker_leakage_diffusion.csv")), caption = 
 
 ## 5.6 CNV calls (CopyKAT)
 
-CopyKAT was run twice: once on all cells pooled (step 15) and then per donor (step 16). The
+CopyKAT was run twice: once on all cells pooled (step 16) and then per donor (step 17). The
 per-donor run is what produced the output below.
 
 ```{r figs-cnv, results='asis'}
@@ -505,13 +507,13 @@ sessionInfo()
 ```{r drops, results='asis'}
 cat("\n**Scripts dropped when collating this folder**, and why:\n\n")
 cat("| Dropped | Reason |\n|---|---|\n")
-cat("| `backup/8.create_seurat_object.R` | Byte-identical to `scripts/6a.initial_QC.R` (step 02). |\n")
-cat("| `backup/10b.annotate_DSB.R` | Byte-identical to `scripts/12.identify_cancer_cells.R` (step 11). |\n")
-cat("| `backup/4.initial_QC.R` | Earlier, shorter version of step 02. |\n")
+cat("| `backup/8.create_seurat_object.R` | Byte-identical to `scripts/6a.initial_QC.R` (step 03). |\n")
+cat("| `backup/10b.annotate_DSB.R` | Byte-identical to `scripts/12.identify_cancer_cells.R` (step 12). |\n")
+cat("| `backup/4.initial_QC.R` | Earlier, shorter version of step 03. |\n")
 cat("| `backup/11a.example_cite_copykat.R` | Exploratory scratch, not part of the pipeline. |\n")
 cat("| `add_cite_for_hiep.R` | One-off to hand CITE data to a colleague, no analytical result. |\n\n")
 ```
 
 Note that `scripts/12.identify_cancer_cells.R` does not identify cancer cells - it is the
 BoneMarrowMap projection on the DSB object, byte-identical to `backup/10b.annotate_DSB.R`.
-The name is misleading, so it is `11.annotate_CITE_DSB.R` here.
+The name is misleading, so it is `12.annotate_CITE_DSB.R` here.

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ------------------------------------------------------------------
-# LK1 pilot run - step 04 of 18
+# LK1 pilot run - step 05 of 19
 #
 # cellsnp-lite pileup over the emptyDrops barcodes, then vireo donor deconvolution with N_DONORS=4.
 #

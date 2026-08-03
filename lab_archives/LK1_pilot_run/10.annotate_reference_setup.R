@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 09 of 18
+# LK1 pilot run - step 10 of 19
 #
 # Load and visualise the BoneMarrowMap Symphony reference, set the uwot path, first projection.
 #

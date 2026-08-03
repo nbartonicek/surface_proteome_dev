@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 08 of 18
+# LK1 pilot run - step 09 of 19
 #
 # Fold the CITE assays into one object and write the analysis_bundle the later steps read.
 #

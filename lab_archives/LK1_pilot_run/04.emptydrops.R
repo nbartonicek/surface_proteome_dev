@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------
-# LK1 pilot run - step 03 of 18
+# LK1 pilot run - step 04 of 19
 #
 # emptyDrops on the raw Cell Ranger matrix, FDR <= 0.01. Its barcode list is the whitelist CITE-seq-Count and cellSNP were run against.
 #

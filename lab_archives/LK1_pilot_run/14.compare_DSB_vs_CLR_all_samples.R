@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------
-# LK1 pilot run - step 13 of 18
+# LK1 pilot run - step 14 of 19
 #
 # DSB-vs-CLR across all samples: background suppression, expected-marker specificity, marker leakage. Writes data_integration/ 01-06.
 #

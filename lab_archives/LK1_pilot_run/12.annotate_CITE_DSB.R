@@ -1,11 +1,11 @@
 #!/usr/bin/env Rscript
 # ------------------------------------------------------------------
-# LK1 pilot run - step 10 of 18
+# LK1 pilot run - step 12 of 19
 #
-# Project the query onto BoneMarrowMap using the ADT/CLR object. Writes seurat_annotated/.
+# Same projection on the CITE_DSB object. Byte-identical to scripts/backup/10b.annotate_DSB.R.
 #
-# Frozen for the lab archive 2026-07-31 from scripts/backup/10a.annotate.R (mtime 2026-05-06).
-# md5 of the original: 8e2bc2377d3152df370da10966e69fb9
+# Frozen for the lab archive 2026-07-31 from scripts/12.identify_cancer_cells.R (mtime 2026-05-06).
+# md5 of the original: ce731ec46ad4e59ccd1c98e5f77bf975
 # Body is unmodified - only this header was added, so the paths inside
 # are still the ones that ran (relative to scripts/, i.e. ../results/...).
 # ------------------------------------------------------------------
@@ -62,7 +62,7 @@ if (!file.exists(seurat_input)) {
 }
 
 seu <- readRDS(seurat_input)
-
+DefaultAssay(seu) <- "RNA"
 cat("Loaded Seurat object:\n")
 cat("Cells:", ncol(seu), "\n")
 cat("Features:", nrow(seu), "\n")
@@ -292,7 +292,7 @@ dev.off()
 # ----------------------------
 
 cite_assay <- case_when(
-  #"CITE_DSB" %in% Assays(query) ~ "CITE_DSB",
+  "CITE_DSB" %in% Assays(query) ~ "CITE_DSB",
   "ADT_CLR" %in% Assays(query) ~ "ADT_CLR",
   "ADT" %in% Assays(query) ~ "ADT",
   TRUE ~ NA_character_
@@ -344,6 +344,14 @@ marker_map <- c(
   "CD7" = "CD7",
   "CD96" = "TACTILE"
 )
+
+adt_df <- FetchData(
+  query,
+  vars = extra_markers,
+  values = "data"
+) %>%
+  rownames_to_column("cell")
+
 marker_map <- marker_map[marker_map %in% colnames(adt_df)]
 
 plot_df$marker <- factor(
@@ -401,7 +409,7 @@ ggsave(
   file.path(projection_dir, paste0("07_", cite_assay, "_selected_markers_manual_projectedUMAP.pdf")),
   p,
   width = 14,
-  height = 8
+  height = 6
 )
 
 
@@ -739,116 +747,3 @@ print(table(query$mapping_error_QC))
 
 cat("\nPredicted lineage summary:\n")
 print(table(query$predicted_Lineage, useNA = "ifany"))
-
-
-######### annotate numbat
-RUN <- "260423_VH01624_453_222HWMYNX"
-SAMPLE_SHORT <- "LK1"
-PROJ <- "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
-
-seu_file <- file.path(
-  PROJ,
-  "results/seurat_annotated",
-  RUN,
-  paste0(SAMPLE_SHORT, "_seurat_annotated.rds")
-)
-
-OUT_BASE <- file.path(
-  PROJ,
-  "results/seurat_annotated",
-  RUN,
-  "numbat",
-  "numbat_inputs_no_seurat"
-)
-
-dir.create(OUT_BASE, recursive = TRUE, showWarnings = FALSE)
-
-DefaultAssay(seu) <- "RNA"
-
-# ----------------------------
-# Pick donor/sample column
-# ----------------------------
-sample_col <- if ("sample_name" %in% colnames(seu@meta.data)) {
-  "sample_name"
-} else if ("orig.ident" %in% colnames(seu@meta.data)) {
-  "orig.ident"
-} else {
-  stop("No sample_name or orig.ident column found.")
-}
-
-samples <- sort(unique(na.omit(seu@meta.data[[sample_col]])))
-
-# ----------------------------
-# Export per donor/sample
-# ----------------------------
-for (donor in samples) {
-  
-  message("Exporting: ", donor)
-  
-  label <- paste0(SAMPLE_SHORT, "_", donor)
-  out_dir <- file.path(OUT_BASE, label)
-  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  
-  seu_sub <- subset(
-    seu,
-    cells = colnames(seu)[seu@meta.data[[sample_col]] == donor]
-  )
-  
-  expr <- GetAssayData(seu_sub, assay = "RNA", layer = "counts")
-  expr <- as(expr, "dgCMatrix")
-  
-  # ----------------------------
-  # Cell type annotation
-  # ----------------------------
-  if (!"predicted_CellType_Broad" %in% colnames(seu_sub@meta.data)) {
-    stop("predicted_CellType_Broad column not found.")
-  }
-  
-  cell_type <- as.character(seu_sub$predicted_CellType_Broad)
-  cell_type[is.na(cell_type) | cell_type == ""] <- "unknown"
-  
-  cell_annot <- data.table(
-    cell = colnames(seu_sub),
-    sample = label,
-    clone = "unknown",
-    cell_type = cell_type
-  )
-  
-  # ----------------------------
-  # Write files
-  # ----------------------------
-  Matrix::writeMM(
-    expr,
-    file.path(out_dir, paste0(label, "_counts.mtx"))
-  )
-  
-  fwrite(
-    data.table(gene = rownames(expr)),
-    file.path(out_dir, paste0(label, "_genes.tsv")),
-    sep = "\t",
-    col.names = FALSE
-  )
-  
-  fwrite(
-    data.table(cell = colnames(expr)),
-    file.path(out_dir, paste0(label, "_barcodes.tsv")),
-    sep = "\t",
-    col.names = FALSE
-  )
-  
-  fwrite(
-    cell_annot,
-    file.path(out_dir, paste0(label, "_cell_annot.tsv")),
-    sep = "\t"
-  )
-  
-  message("  cells: ", ncol(expr))
-  message("  genes: ", nrow(expr))
-  message("  cell types:")
-  print(table(cell_annot$cell_type, useNA = "ifany"))
-}
-
-message("Done. Files written to: ", OUT_BASE)
-
-
-
