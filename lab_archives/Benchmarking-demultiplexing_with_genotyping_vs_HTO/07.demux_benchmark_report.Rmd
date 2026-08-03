@@ -1,0 +1,326 @@
+---
+title: "Benchmarking: demultiplexing with genotyping vs HTO"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  pilot_run: "260423_VH01624_453_222HWMYNX"
+  runs: !r c("260522_VH01624_461_222JLJVNX","260528_VH01624_464_222K7VKNX","260717_VH01624_477_222KG22NX")
+---
+
+<!--
+# ------------------------------------------------------------------
+# Demultiplexing benchmark: genotyping vs HTO - step 07 of 07
+#
+# Renders the lab archive report from the outputs of steps 01-06. Tables come
+# from the summary CSVs each step wrote, figures are rasterised out of the PDFs.
+#
+# Render with ./render_report.sh, which also prints the HTML to PDF.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+theme_set(theme_bw(base_size = 12))
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) FALSE)
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+}
+
+read_if <- function(path, ...) {
+  if (!file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+proj  <- params$proj
+res   <- file.path(proj, "results")
+nf    <- file.path(proj, "results_nf")
+pilot <- params$pilot_run
+runs  <- params$runs
+short <- function(r) sub("_VH.*", "", r)
+
+# The two sources lay their output out differently: the standalone runs are flat
+# under demux_comparison/<run>/<sample>/, while the pipeline nests them under
+# results_nf/<run>/06_demux_comparison/<sample>/figures/ and .../tables/. Both
+# lookups below therefore recurse and match on file name.
+dc_root <- function(run, source = c("standalone", "pipeline")) {
+  source <- match.arg(source)
+  p <- if (source == "standalone") file.path(res, "demux_comparison", run)
+       else file.path(nf, run, "06_demux_comparison")
+  if (dir.exists(p)) p else NA_character_
+}
+
+# find one file by exact name anywhere under a comparison root
+dc_file <- function(root, name) {
+  if (is.na(root)) return(NA_character_)
+  hits <- list.files(root, pattern = paste0("^", gsub("\\.", "\\\\.", name), "$"),
+                     recursive = TRUE, full.names = TRUE)
+  hits <- hits[!grepl("(^|/)\\._", hits)]
+  if (!length(hits)) NA_character_ else hits[1]
+}
+
+dc_pdfs <- function(root) {
+  if (is.na(root)) return(character(0))
+  f <- list.files(root, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE)
+  f[!grepl("(^|/)\\._", f)]
+}
+
+FIGS <- unique(c(
+  unlist(lapply(c(pilot, runs), function(r) dc_pdfs(dc_root(r, "standalone")))),
+  unlist(lapply(runs,           function(r) dc_pdfs(dc_root(r, "pipeline"))))
+))
+FIGS <- FIGS[file.exists(FIGS)]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+```
+
+**Runs:** pilot `` `r pilot` `` (where the parameter sweep was done), then
+`` `r paste(short(runs), collapse = ", ") `` through the pipeline.
+
+**Status:** settled. `positive.quantile = 0.99` was adopted and is what the Nextflow pipeline
+runs for every sample.
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `07.demux_benchmark_report.Rmd`, from the outputs of
+steps 01-06 in this folder.
+
+Samples are pooled several to a GEM well, so every cell has to be assigned back to a donor.
+Two independent methods are available: hashtag oligos (HTO), which are added at the bench, and
+genotype demultiplexing from the RNA itself via cellsnp-lite and vireo. This report compares
+them.
+
+For full report, download `demux_benchmark_report.html` in the attachment and open in a
+browser.
+
+Code used - attached and in the github repository:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/Benchmarking-demultiplexing_with_genotyping_vs_HTO>
+
+# Aim
+
+Decide which demultiplexing method to carry into the pipeline, and on what setting:
+
+- do HTO hashing and genotype demultiplexing recover the same donors
+- which assigns more cells as confident singlets, and which calls more doublets
+- what `positive.quantile` threshold should HTODemux use
+- does the method still work for a donor that was never hashed
+
+# Conclusions
+
+- genotyping with cellSNP/vireo outperforms HTO hashing, and is the method the pipeline now
+  relies on for donor assignment
+- HTO is still worth running: it is what names the donors, since vireo only produces anonymous
+  `donor0…donorN` labels that have to be matched back to sample identity
+- `positive.quantile = 0.99` was adopted after the sweep and is what every pipeline run uses;
+  the pilot's original 0.80 is too permissive
+- the unhashed-donor case works after the fix in `nextflow/bin/process_cellsnp_hto.R`, verified
+  against LK3's real output rather than a reimplementation
+
+# 1. How the two methods are produced
+
+HTO comes from CITE-seq-Count on the hashtag library (step 01), whitelisted to the emptyDrops
+barcodes, then `HTODemux`. Genotype demultiplexing (step 02) runs cellsnp-lite over the same
+barcode list against the Cell Ranger BAM, then vireo with `N_DONORS=4`. Step 03 joins the two
+and produces everything below.
+
+The important asymmetry: **vireo output is anonymous.** It returns `donor0`, `donor1` … with no
+idea which is which. HTO is what supplies the mapping from genotype cluster to sample name,
+which is why both are run even though genotyping is the better classifier. That mapping is
+saved as `vireo_to_hto_sample_name_map_positive_quantile_0.99.csv`.
+
+```{r gt-distance, results='asis'}
+for (r in c(pilot, runs)) {
+  p <- file.path(res, "genotype_demux", r)
+  if (!dir.exists(p)) next
+  f <- list.files(p, pattern = "fig_GT_distance_estimated\\.pdf$", recursive = TRUE, full.names = TRUE)
+  if (length(f)) show_fig(f[1], paste0("Vireo estimated genotype distance between donors, ",
+    short(r), ". Confirms the donors are genetically distinguishable before any comparison is made."),
+    width_pct = 70)
+}
+```
+
+# 2. The parameter sweep
+
+The sweep was done on the pilot run. `HTODemux`'s `positive.quantile` sets how aggressively a
+cell is called positive for a hashtag; every comparison figure was produced at the default
+0.80, at 0.99, and across all quantiles.
+
+```{r sweep-figs, results='asis'}
+d <- dc_root(pilot, "standalone")
+if (!is.na(d)) {
+  for (f in c("01_demux_efficiency_barplot", "03_hto_vireo_donor_heatmap",
+              "04_upset_HTO_vireo_overlap")) {
+    for (suffix in c("", "_all_positive_quantiles")) {
+      p <- dc_file(d, paste0(f, suffix, ".pdf"))
+      lab <- if (suffix == "") "at the default 0.80" else "across all positive quantiles"
+      if (file.exists(p)) show_fig(p, paste0("`", f, "` ", lab, "."))
+    }
+  }
+}
+```
+
+```{r sweep-tables, results='asis'}
+if (!is.na(d)) {
+  show_table(read_if(dc_file(d, "demux_efficiency_summary.csv")),
+             caption = "Demux efficiency, pilot run, default quantile")
+  show_table(read_if(dc_file(d, "demux_efficiency_summary_all_positive_quantiles.csv")),
+             caption = "Demux efficiency across the quantile sweep", n = 30)
+}
+```
+
+Only the 0.99 outputs survive for the later runs, which is the practical record of the
+decision: from LK2 onwards nothing else was generated.
+
+# 3. Agreement, per run
+
+```{r agreement, results='asis'}
+for (r in runs) {
+  d2 <- dc_root(r, "pipeline"); d1 <- dc_root(r, "standalone")
+  d <- if (!is.na(d2)) d2 else d1
+  if (is.na(d)) next
+  cat("\n## ", short(r), "\n\n", sep = "")
+  cat(if (identical(d, d2)) "From the Nextflow pipeline.\n\n" else "Standalone run.\n\n")
+  show_table(read_if(dc_file(d, "demux_efficiency_summary.csv")),
+             caption = paste("Demux efficiency -", short(r)))
+  show_table(read_if(dc_file(d, "hto_vireo_agreement_summary.csv")),
+             caption = paste("HTO / vireo agreement -", short(r)))
+  show_table(read_if(dc_file(d, "vireo_summary.csv")),
+             caption = paste("Vireo summary -", short(r)))
+}
+```
+
+# 4. The settled comparison
+
+Figures at `positive.quantile = 0.99`, as the pipeline produces them.
+
+```{r settled-figs, results='asis'}
+for (r in runs) {
+  d <- dc_root(r, "pipeline")
+  if (is.na(d)) next
+  cat("\n## ", short(r), "\n\n", sep = "")
+  notes <- c(
+    "01_demux_efficiency_barplot" = "Singlet / doublet / negative rates for HTO and vireo side by side. The headline comparison.",
+    "02_hto_vireo_doublet_comparison" = "Whether the two methods call the same cells doublets.",
+    "03_hto_vireo_donor_heatmap" = "HTO sample against vireo donor. Off-diagonal mass is the disagreement; this is also the figure the sample-name mapping is read off.",
+    "04_upset_HTO_vireo_overlap" = "UpSet of the call overlap.",
+    "05_HTO_QC" = "HTO QC at the adopted threshold.",
+    "06_HTO_ridge" = "Ridge plots per hashtag.",
+    "06b_HTO_ratio_thresholds" = "HTO ratio thresholds.",
+    "07_UMAP_HTO_cellSNP" = "Both sets of calls on the UMAP."
+  )
+  for (nm in names(notes)) {
+    p <- dc_file(d, paste0(nm, "_positive_quantile_0.99.pdf"))
+    if (!is.na(p)) show_fig(p, notes[[nm]])
+  }
+}
+```
+
+# 5. The unhashed donor
+
+Not every donor in a pool carries a hashtag. Step 06 checks that case: it runs the production
+script `nextflow/bin/process_cellsnp_hto.R` with exactly the arguments the pipeline module
+would pass for LK3-GEX, against that run's already-completed cellSNP/vireo and HTO output.
+Running the real script rather than a reimplementation is the point - it exercises the code
+that ships.
+
+The trial output lives in `scripts/TRIAL_output_unhashed_donor_demux/`, deliberately outside
+`nextflow/`, following the convention that trial and diagnostic scripts never sit inside the
+pipeline directory.
+
+# 6. What was run, in order
+
+| Step | Script | What it does |
+|---|---|---|
+| 01 | `01.hto_count.sbatch` | CITE-seq-Count on the HTO library, whitelisted to emptyDrops barcodes. |
+| 02 | `02.cellSNP_vireo.sh` | cellsnp-lite pileup over the same barcodes, then vireo with `N_DONORS=4`. |
+| 03 | `03.process_cellSNP_HTO.R` | Joins vireo onto the object, cross-tabulates against HTO, writes the sweep. |
+| 04 | `04.QC_HTO_ADT_only.R` | QC restricted to the HTO and ADT modalities. |
+| 05 | `05.QC_HTO_comparison.R` | Compares HTO and ADT behaviour between the LK1 and LK2 runs. |
+| 06 | `06.test_unhashed_donor_demux.sh` | Verifies the unhashed-donor fix against LK3's real output. |
+| 07 | `07.demux_benchmark_report.Rmd` | This report. |
+
+The biotin-specific part of step 05 was later split into `scripts/6b1.biotin_ADT_comparison.R`,
+which belongs to the biotin report rather than here.
+
+# 7. Data locations
+
+| What | Location |
+|---|---|
+| Genotype demux | `results/genotype_demux/<run>/<sample>/cellsnp/` and `.../vireo/` |
+| Comparison, standalone | `results/demux_comparison/<run>/<sample>/` |
+| Comparison, pipeline | `results_nf/<run>/06_demux_comparison/` |
+| HTO counts | `results/cite_seq_count/<run>/hto_counts_*/` |
+| Unhashed-donor trial | `scripts/TRIAL_output_unhashed_donor_demux/` |
+
+```{r locations, results='asis'}
+rows <- list()
+for (r in c(pilot, runs)) {
+  for (lab in c("standalone", "pipeline")) {
+    d <- dc_root(r, lab)
+    if (is.na(d)) next
+    f <- list.files(d, recursive = TRUE, full.names = TRUE)
+    f <- f[!grepl("(^|/)\\._", f)]
+    if (!length(f)) next
+    dt <- as.Date(file.info(f)$mtime)
+    rows[[length(rows) + 1]] <- tibble(run = short(r), source = lab,
+                                       files = length(f), first = min(dt), last = max(dt))
+  }
+}
+show_table(bind_rows(rows), caption = "Demux comparison outputs by run and source")
+```
+
+# 8. Tools
+
+| Tool | Version | Source |
+|---|---|---|
+| cellsnp-lite | 1.2.3 (htslib 1.23.1) | `cellsnp_env` |
+| vireo (vireoSNP) | to confirm | `cellsnp_env` |
+| CITE-seq-Count | to confirm | `01.hto_count.sbatch` |
+| Seurat `HTODemux` | see session below | `positive.quantile = 0.99` adopted |
+
+```{r session}
+sessionInfo()
+```
+
+# 9. Caveats
+
+1. **The sweep exists only for the pilot run.** From LK2 onwards only the 0.99 outputs were
+   generated, so the comparison across thresholds cannot be redone from saved files for the
+   later runs without re-running step 03.
+2. **`results/demux_comparison/` has no entry for LK1-resequenced or LK3.** Those runs were
+   demultiplexed through the pipeline, so their comparison lives under `results_nf/<run>/`.
+3. Vireo's donor labels are anonymous; any statement tying a genotype cluster to a sample name
+   depends on the HTO mapping in `vireo_to_hto_sample_name_map_positive_quantile_0.99.csv`.
