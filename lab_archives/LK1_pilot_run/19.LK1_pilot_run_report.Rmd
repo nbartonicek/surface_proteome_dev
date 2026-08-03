@@ -20,18 +20,10 @@ params:
 # LK1 pilot run - step 19 of 19
 #
 # Renders the lab archive report for the pilot run from the outputs of
-# steps 01-18. Everything that can be read off disk is read off disk, so
-# the report cannot drift from the results: tables come from the summary
+# steps 01-18. Tables come from the summary
 # CSVs each step wrote, figures are rasterised straight out of the PDFs
 # those steps produced, and the timeline is built from file modification
 # times.
-#
-# Missing inputs are skipped silently rather than erroring, so a partial
-# render is the expected case, not a failure.
-#
-# Same output format as 21.run_qc_report.Rmd (html_document, flatly,
-# floating toc, folded code) and it reuses that script's embed_pdf_figure()
-# so PDF figures render inline rather than being named as paths.
 #
 # Render with:
 #   Rscript -e 'rmarkdown::render("19.LK1_pilot_run_report.Rmd")'
@@ -88,7 +80,6 @@ embed_image <- function(path, width_pct = 100) {
 }
 
 # One figure with its caption and description, then the image.
-# Anything not on disk is skipped without comment.
 show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
   if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
   cat(sprintf("\n**`%s`**\n\n", basename(path)))
@@ -157,10 +148,10 @@ fig <- function(pattern) {
 
 # ---------------------------------------------------------------
 # Every figure this report imports, resolved up front so the header can state
-# when the earliest of them was produced. Keep this list in step with the
-# show_fig() calls in section 5 - a pattern listed here that is not shown below
-# (or vice versa) only shifts the "First generated" date, it does not drop a
-# figure from the report.
+# when the last of them was produced. Keep this list in step with the show_fig()
+# calls in section 5 - a pattern listed here that is not shown below (or vice
+# versa) only shifts the "Analysis finished" date, it does not drop a figure
+# from the report.
 # ---------------------------------------------------------------
 FIG_PATTERNS <- c(
   "seurat_demux/260423_VH01624_453_222HWMYNX/01_initial_qc_violin.pdf",
@@ -205,8 +196,10 @@ if (dir.exists(ck_dir)) {
 }
 
 report_figs <- report_figs[!is.na(report_figs) & file.exists(report_figs)]
-first_generated <- if (length(report_figs)) {
-  min(as.Date(file.info(report_figs)$mtime))
+# The report itself is deliberately not in report_figs, so this is when the
+# analysis stopped producing output, not when the write-up was rendered.
+analysis_finished <- if (length(report_figs)) {
+  max(as.Date(file.info(report_figs)$mtime))
 } else NA
 ```
 
@@ -215,8 +208,8 @@ first_generated <- if (length(report_figs)) {
 **Status:** superseded - LK1 was re-sequenced as `260522_VH01624_461_222JLJVNX`. Everything
 below is the first pass on the pilot data and should not be quoted as a current result.
 
-**First generated:** `r if (is.na(first_generated)) "n/a" else format(first_generated)` - the
-earliest of the `r length(report_figs)` figures shown below.
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(report_figs)` figures shown below.
 
 **Report generated:** `r Sys.Date()` by `19.LK1_pilot_run_report.Rmd`, from the outputs of
 steps 01-18 in this folder.
@@ -224,6 +217,18 @@ steps 01-18 in this folder.
 This is the first run of the project and most of the pipeline was worked out on it. Several
 of the scripts that produced these outputs have since been renumbered or replaced; the copies
 in this folder are the versions that ran, renumbered into execution order.
+
+# Aim
+
+Establish the single-cell workflow for the AML surface-proteome project on the first
+multiplexed run, before committing to it for the rest of the cohort. Four samples were hashed
+into a single GEM well with paired GEX, ADT (TotalSeq-A) and HTO libraries, which sets up four
+questions this run was meant to answer:
+
+- does HTO hashing recover the four samples, and does genotype demultiplexing agree with it
+- which ADT normalisation to carry forward, CLR or DSB
+- do the cells annotate sensibly against a bone marrow reference
+- can malignant cells be called from CNVs in data of this depth
 
 # 1. Run, libraries and samples
 

@@ -1596,18 +1596,10 @@ border-radius: 0px;
 # LK1 pilot run - step 19 of 19
 #
 # Renders the lab archive report for the pilot run from the outputs of
-# steps 01-18. Everything that can be read off disk is read off disk, so
-# the report cannot drift from the results: tables come from the summary
+# steps 01-18. Tables come from the summary
 # CSVs each step wrote, figures are rasterised straight out of the PDFs
 # those steps produced, and the timeline is built from file modification
 # times.
-#
-# Missing inputs are skipped silently rather than erroring, so a partial
-# render is the expected case, not a failure.
-#
-# Same output format as 21.run_qc_report.Rmd (html_document, flatly,
-# floating toc, folded code) and it reuses that script's embed_pdf_figure()
-# so PDF figures render inline rather than being named as paths.
 #
 # Render with:
 #   Rscript -e 'rmarkdown::render("19.LK1_pilot_run_report.Rmd")'
@@ -1620,8 +1612,8 @@ border-radius: 0px;
 <p><strong>Status:</strong> superseded - LK1 was re-sequenced as
 <code>260522_VH01624_461_222JLJVNX</code>. Everything below is the first
 pass on the pilot data and should not be quoted as a current result.</p>
-<p><strong>First generated:</strong> 2026-04-28 - the earliest of the 37
-figures shown below.</p>
+<p><strong>Analysis finished:</strong> 2026-05-20 - the most recent of
+the 37 figures shown below.</p>
 <p><strong>Report generated:</strong> 2026-08-03 by
 <code>19.LK1_pilot_run_report.Rmd</code>, from the outputs of steps
 01-18 in this folder.</p>
@@ -1629,6 +1621,21 @@ figures shown below.</p>
 worked out on it. Several of the scripts that produced these outputs
 have since been renumbered or replaced; the copies in this folder are
 the versions that ran, renumbered into execution order.</p>
+<div id="aim" class="section level1">
+<h1>Aim</h1>
+<p>Establish the single-cell workflow for the AML surface-proteome
+project on the first multiplexed run, before committing to it for the
+rest of the cohort. Four samples were hashed into a single GEM well with
+paired GEX, ADT (TotalSeq-A) and HTO libraries, which sets up four
+questions this run was meant to answer:</p>
+<ul>
+<li>does HTO hashing recover the four samples, and does genotype
+demultiplexing agree with it</li>
+<li>which ADT normalisation to carry forward, CLR or DSB</li>
+<li>do the cells annotate sensibly against a bone marrow reference</li>
+<li>can malignant cells be called from CNVs in data of this depth</li>
+</ul>
+</div>
 <div id="run-libraries-and-samples" class="section level1">
 <h1>1. Run, libraries and samples</h1>
 <table>
