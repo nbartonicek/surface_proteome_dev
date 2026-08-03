@@ -1,0 +1,35 @@
+# Data and results - never in git.
+# scripts/ contains a 1.3 GB .h5ad and a 332 MB .h5Seurat sitting next to the code,
+# and GitHub hard-rejects anything over 100 MB, so keep these out by extension
+# rather than relying on remembering not to `git add .`.
+*.h5ad
+*.h5Seurat
+*.rds
+*.RDS
+*.bam
+*.bai
+*.mtx
+*.mtx.gz
+*.loom
+
+# Rendered reports - regenerate from the .Rmd instead (some are >10 MB).
+*.html
+# ...except the lab archive reports, where the rendered HTML IS the deliverable.
+!lab_archives/**/*.html
+
+# Working output that happens to live in scripts/
+.snakemake/
+logs/
+figure/
+Rplots.pdf
+TRIAL_output_unhashed_donor_demux/
+remove_me/
+
+# R / Python / macOS cruft
+.Rhistory
+.RData
+.Rproj.user/
+.nextflow.log*
+__pycache__/
+.DS_Store
+._*

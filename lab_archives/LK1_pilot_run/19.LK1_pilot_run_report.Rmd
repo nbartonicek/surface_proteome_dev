@@ -1,0 +1,634 @@
+---
+title: "LK1 pilot run"
+subtitle: "`r params$run_id`"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  run_id: "260423_VH01624_453_222HWMYNX"
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  sample_short: "LK1"
+  sample_name: "LK1-GEX"
+---
+
+<!--
+# ------------------------------------------------------------------
+# LK1 pilot run - step 19 of 19
+#
+# Renders the lab archive report for the pilot run from the outputs of
+# steps 01-18. Tables come from the summary
+# CSVs each step wrote, figures are rasterised straight out of the PDFs
+# those steps produced, and the timeline is built from file modification
+# times.
+#
+# Render with:
+#   Rscript -e 'rmarkdown::render("19.LK1_pilot_run_report.Rmd")'
+# pandoc is not on PATH on this laptop; if rendering outside RStudio, point
+# at the one inside the RStudio bundle first:
+#   export RSTUDIO_PANDOC=/Applications/RStudio.app/Contents/Resources/app/quarto/bin/tools/aarch64
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+
+theme_set(theme_bw(base_size = 12))
+
+# ---------------------------------------------------------------
+# Bespoke color palettes, copied from 21.run_qc_report.Rmd, which took them from
+# nextflow/bin/annotate.R - so composition figures here match the pipeline's own.
+# ---------------------------------------------------------------
+lineage_cols <- c(
+  "Stem / progenitor" = "#1B9E77", "Myeloid / DC" = "#E31A1C",
+  "Lymphoid" = "#2171B5", "Erythroid" = "#C51B8A", "Other" = "grey70"
+)
+
+celltype_order <- rev(c(
+  "HSC MPP", "LMPP", "MEP", "Megakaryocyte Precursor", "Early GMP", "Late GMP",
+  "Cycling Progenitor", "EoBasoMast Precursor",
+  "Pro-Monocyte", "Monocyte", "cDC", "pDC",
+  "Early Lymphoid", "Pro-B", "Pre-B", "B", "Naive T", "CD4 Memory T", "CD8 Memory T",
+  "NK", "Plasma Cell", "Early Erythroid", "Late Erythroid"
+))
+
+celltype_cols <- c(
+  "HSC MPP" = "#1B9E77", "LMPP" = "#66C2A5", "MEP" = "#B2DF8A", "GMP" = "#33A02C",
+  "Early GMP" = "#A6D854", "Late GMP" = "#006D2C", "Cycling Progenitor" = "#00441B",
+  "EoBasoMast Precursor" = "#8DD3C7", "Megakaryocyte Precursor" = "#4DAF4A",
+  "Monocyte" = "#E31A1C", "Pro-Monocyte" = "#FB6A4A", "cDC" = "#FD8D3C", "pDC" = "#FCBBA1",
+  "Naive T" = "#2171B5", "CD4 Memory T" = "#6BAED6", "CD8 Memory T" = "#08519C",
+  "NK" = "#54278F", "Early Lymphoid" = "#9E9AC8", "B" = "#3182BD", "Pre-B" = "#9ECAE1",
+  "Pro-B" = "#C6DBEF", "Plasma Cell" = "#756BB1",
+  "Early Erythroid" = "#F768A1", "Late Erythroid" = "#C51B8A"
+)
+
+# The lineage mapping annotate.R uses. It keys on predicted_CellType_Broad, which
+# is why it must be applied to the broad table, not the fine one - see section 5.4.
+assign_lineage <- function(celltype) {
+  case_when(
+    celltype %in% c("HSC MPP", "LMPP", "MEP", "GMP", "Early GMP", "Late GMP",
+                    "Cycling Progenitor", "EoBasoMast Precursor",
+                    "Megakaryocyte Precursor") ~ "Stem / progenitor",
+    celltype %in% c("Monocyte", "Pro-Monocyte", "cDC", "pDC") ~ "Myeloid / DC",
+    celltype %in% c("Naive T", "CD4 Memory T", "CD8 Memory T", "NK",
+                    "Early Lymphoid", "B", "Pre-B", "Pro-B", "Plasma Cell") ~ "Lymphoid",
+    celltype %in% c("Early Erythroid", "Late Erythroid") ~ "Erythroid",
+    TRUE ~ "Other"
+  )
+}
+
+extend_palette <- function(base_cols, all_levels) {
+  missing <- setdiff(all_levels, names(base_cols))
+  if (length(missing)) base_cols <- c(base_cols, setNames(scales::hue_pal()(length(missing)), missing))
+  base_cols
+}
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+# ---------------------------------------------------------------
+# Convert a pipeline-generated PDF figure to PNG and return a markdown image
+# tag, so figures actually render inline in the HTML report instead of just
+# being named as a file path. Falls back to a plain path link if pdftools
+# isn't installed or conversion fails for any reason.
+# (copied verbatim from 21.run_qc_report.Rmd so the two reports behave the same)
+# ---------------------------------------------------------------
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) {
+    cat(sprintf("\n_(pdftools not installed - showing path instead)_ `%s`\n\n", pdf_path))
+    return(invisible(NULL))
+  }
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE)
+    TRUE
+  }, error = function(e) {
+    cat(sprintf("\n_(failed to render `%s`: %s)_\n\n", basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+# Raster images (the copykat heatmaps are jpeg) go in directly - pandoc
+# base64-embeds them when self_contained is on, which is the html_document default.
+embed_image <- function(path, width_pct = 100) {
+  if (is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', path, width_pct))
+}
+
+# One figure with its caption and description, then the image.
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  if (grepl("\\.pdf$", path, ignore.case = TRUE)) {
+    embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+  } else {
+    embed_image(path, width_pct = width_pct)
+  }
+}
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+proj    <- params$proj
+run     <- params$run_id
+res     <- file.path(proj, "results")
+raw_dir <- file.path(proj, "raw", run)
+
+# ---------------------------------------------------------------
+# Small helpers - all reads are defensive: missing files return NULL
+# rather than erroring, so the report renders even for a partial run.
+# ---------------------------------------------------------------
+read_if <- function(path, ...) {
+  if (!file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)),
+             silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n")
+  print(kable(df, caption = caption))
+  cat("\n\n")
+}
+
+rd <- function(...) file.path(res, ..., run)
+
+# All output files for this run, with dates - drives the timeline.
+run_files <- function() {
+  dirs <- list.dirs(res, recursive = FALSE, full.names = TRUE)
+  hits <- character(0)
+  for (d in dirs) {
+    p <- file.path(d, run)
+    if (dir.exists(p)) hits <- c(hits, list.files(p, recursive = TRUE, full.names = TRUE))
+  }
+  if (!length(hits)) return(NULL)
+  tibble(
+    path = hits,
+    rel  = sub(paste0("^", res, "/"), "", hits),
+    date = as.Date(file.info(hits)$mtime),
+    ext  = tolower(tools::file_ext(hits))
+  ) %>% filter(!grepl("(^|/)\\._", rel))
+}
+
+files_tbl <- run_files()
+
+# Find one file by the tail of its path, so the figure sections do not have to
+# hardcode which results directory a figure ended up in.
+fig <- function(pattern) {
+  if (is.null(files_tbl)) return(NA_character_)
+  hit <- files_tbl$path[grepl(pattern, files_tbl$rel, fixed = TRUE)]
+  if (!length(hit)) NA_character_ else hit[1]
+}
+
+# ---------------------------------------------------------------
+# Every figure this report imports, resolved up front so the header can state
+# when the last of them was produced. Keep this list in step with the show_fig()
+# calls in section 5 - a pattern listed here that is not shown below (or vice
+# versa) only shifts the "Analysis finished" date, it does not drop a figure
+# from the report.
+# ---------------------------------------------------------------
+FIG_PATTERNS <- c(
+  "seurat_demux/260423_VH01624_453_222HWMYNX/01_initial_qc_violin.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/02_hto_ridgeplots.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/03_umap_demux.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/05_hto_featureplots.pdf",
+  "demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/01_demux_efficiency_barplot.pdf",
+  "demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/04_upset_HTO_vireo_overlap.pdf",
+  "genotype_demux/260423_VH01624_453_222HWMYNX/LK1-GEX/vireo/fig_GT_distance_estimated.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/06_ADT_QC.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/07_top_ADT_markers.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/08_top_ADT_cluster_markers_dotplot.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/10_top10_discriminative_ADT_plus_biotin_UMAP.pdf",
+  "seurat_demux/260423_VH01624_453_222HWMYNX/11_biotin_expression_by_cluster_violin.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/01_mapping_error_QC.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/02_projected_predicted_celltypes_pass_only.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/03_projected_samples_pass_only.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/04_projected_pseudotime_pass_only.pdf",
+  "seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/05_projection_by_sampleID_BMM_helper_manual_split.pdf",
+  "projectionFigures/06_ADT_CLR_top_marker_projection.pdf",
+  "DSB_vs_CLR_HBDN206-MNpCT/01_marker_mean_shift_DSB_minus_CLR.pdf",
+  "data_integration/260423_VH01624_453_222HWMYNX/01_background_suppression.pdf",
+  "data_integration/260423_VH01624_453_222HWMYNX/02_expected_marker_specificity.pdf",
+  "data_integration/260423_VH01624_453_222HWMYNX/03_marker_leakage_diffusion.pdf"
+)
+
+report_figs <- unname(vapply(FIG_PATTERNS, fig, character(1)))
+
+# the per-donor CopyKAT figures, which are resolved dynamically in section 5.6
+ck_dir <- file.path(rd("seurat_annotated"), "copykat_annotated")
+if (dir.exists(ck_dir)) {
+  for (d in setdiff(list.dirs(ck_dir, recursive = FALSE, full.names = TRUE), "")) {
+    report_figs <- c(report_figs, file.path(d, c(
+      "01_copykat_call_composition_by_sampleID.pdf",
+      "02_copykat_calls_on_projected_RNA_UMAP.pdf",
+      "03_copykat_by_BoneMarrowMap_broad_celltype.pdf",
+      "LK1_copykat_copykat_heatmap.jpeg")))
+  }
+}
+
+report_figs <- report_figs[!is.na(report_figs) & file.exists(report_figs)]
+# The report itself is deliberately not in report_figs, so this is when the
+# analysis stopped producing output, not when the write-up was rendered.
+analysis_finished <- if (length(report_figs)) {
+  max(as.Date(file.info(report_figs)$mtime))
+} else NA
+```
+
+**Run:** `` `r run` ``
+
+**Status:** superseded - LK1 was re-sequenced as `260522_VH01624_461_222JLJVNX`. Everything
+below is the first pass on the pilot data and should not be quoted as a current result.
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(report_figs)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `19.LK1_pilot_run_report.Rmd`, from the outputs of
+steps 01-18 in this folder.
+
+This is the first run of the project and most of the pipeline was worked out on it. Several
+of the scripts that produced these outputs have since been renumbered or replaced; the copies
+in this folder are the versions that ran, renumbered into execution order.
+
+# Aim
+
+Establish the single-cell workflow for the AML surface-proteome project on the first
+multiplexed run, before committing to it for the rest of the cohort. Four samples were hashed
+into a single GEM well with paired GEX, ADT (TotalSeq-A) and HTO libraries, which sets up four
+questions this run was meant to answer:
+
+- does HTO hashing recover the four samples, and does genotype demultiplexing agree with it
+- which ADT normalisation to carry forward, CLR or DSB
+- do the cells annotate sensibly against a bone marrow reference
+- can malignant cells be called from CNVs in data of this depth
+
+# Conclusions
+
+- overall quality of the run was of ok quality, with a potential issue of only 44% saturation level, as reported by Cellranger that will be addressed by resequencing
+- genotyping with cellSNP/vireo outperforms HTO hashing
+- DSB normalisation of CITE-seq outperforms CLR approach
+- cell annotation with Bone Marrow Map works and should be used in the future
+- can malignant cells be called from CNVs in data of this depth, but alternative callers should be tested and verified
+
+# 1. Run, libraries and samples
+
+```{r read-counts, results='asis'}
+rc <- read_if(file.path(raw_dir, "fastq_read_counts.tsv"),
+              delim = "\t", col_names = c("fastq", "reads"))
+if (!is.null(rc)) {
+  rc <- rc %>%
+    mutate(library = case_when(
+      grepl("GEX", fastq)  ~ "GEX",
+      grepl("-ADT", fastq) ~ "ADT (TotalSeq-A)",
+      grepl("-HTO", fastq) ~ "HTO (TotalSeq-A)",
+      TRUE                 ~ "other")) %>%
+    arrange(desc(reads)) %>%
+    mutate(reads = format(reads, big.mark = ","))
+}
+show_table(rc, caption = "R1 read counts per library (01.count_reads.sh)")
+```
+
+Read counts are line count / 4 on R1. The HTO library is far shallower than ADT, which is the
+expected ratio but worth remembering when reading the demux figures.
+
+Four samples were hashed into the well. The map is hardcoded in
+`02.initial_QC_and_HTO_demux.R`:
+
+| HTO barcode | Sample |
+|---|---|
+| `HTO1-GTCAACTCTTTAGCG` | MOLM13 (AML cell line) |
+| `HTO2-TGATGGCCTATTGGG` | HBDN206-MNpCT |
+| `HTO3-TTCCGCCTCTCTTTG` | HBDN392-AML-MDS |
+| `HTO4-AGTAAGTTCAGCGTA` | HBDN501-AML-KMT2A |
+
+Note the naming drift: the HTO map writes them with underscores (`HBDN206_MNpCT`), the
+figures and later metadata use hyphens (`HBDN206-MNpCT`). Same samples.
+
+```{r demux-tables, results='asis'}
+show_table(read_if(file.path(rd("seurat_demux"), "demux_summary.csv")),
+           caption = "HTO demultiplexing outcome")
+show_table(read_if(file.path(rd("seurat_demux"), "sample_qc_summary.csv")),
+           caption = "Per-sample QC medians")
+```
+
+# 2. Data locations
+
+| What | Location |
+|---|---|
+| Sequencing facility output | `` `r file.path("/pipeline/Runs/NextSeq", run, "ProjectFolders/Project_Lev-Kats")` `` |
+| Working copy, cluster | `` `r file.path("/scratch/users/nbartonicek/projects/amgen/raw", run)` `` - `Sample_LK1-GEX/`, `Sample_LK1-TotalSeqA-ADT/`, `Sample_LK1-TotalSeqA-HTO/` |
+| Reference | Cell Ranger annotation `refdata-gex-GRCh38-2024-A`, under `annotation/` |
+
+```{r output-dirs, results='asis'}
+if (!is.null(files_tbl)) {
+  files_tbl %>%
+    mutate(dir = sub("/.*", "", rel)) %>%
+    group_by(dir) %>%
+    summarise(first = min(date), last = max(date), files = n(), .groups = "drop") %>%
+    arrange(first) %>%
+    show_table(caption = paste0(
+      "Output directories under /scratch/users/nbartonicek/projects/amgen/results/", run))
+}
+```
+
+# 3. Timeline
+
+```{r timeline, results='asis'}
+if (!is.null(files_tbl)) {
+  files_tbl %>%
+    mutate(dir = sub("/.*", "", rel)) %>%
+    group_by(date) %>%
+    summarise(directories = paste(sort(unique(dir)), collapse = ", "),
+              files = n(), .groups = "drop") %>%
+    arrange(date) %>%
+    show_table(caption = "What was written, by day")
+}
+```
+
+# 4. What was run, in order
+
+The scripts in this folder are numbered in execution order and every step of the pilot is
+accounted for. Steps 02, 04 and 05 were later re-pointed at a subsequent run, so their frozen
+copies carry the wrong `run` - set it back to the pilot run to reproduce. Each says so in its
+header. The re-pointing of step 02 was incomplete, which is part of how it was identified:
+`RUN` and `SAMPLE_SHORT` name LK2 while `SAMPLE` is still `LK1-GEX_S5`.
+
+| Step | Script | What it does |
+|---|---|---|
+| 01 | `01.count_reads.sh` | R1 read counts per library. |
+| 02 | `02.cellranger.sh` | Cell Ranger 10.0.0 count on the GEX library. |
+| 03 | `03.initial_QC_and_HTO_demux.R` | Seurat object, HTO + ADT attached, CLR, `HTODemux(positive.quantile = 0.80)`. |
+| 04 | `04.emptydrops.R` | emptyDrops on the raw matrix, FDR <= 0.01. Produces the barcode whitelist. |
+| 05 | `05.cellSNP_vireo.sh` | cellsnp-lite pileup over those barcodes, then vireo with `N_DONORS=4`. |
+| 06 | `06.demux_vireo_and_doublets.R` | Vireo calls onto the object, HTO cross-tab, doublet detection. |
+| 07 | `07.CITE_qc.R` | CITE QC on emptyDrops cells: raw ADT, CLR, marker distributions, overlays. |
+| 08 | `08.evaluate_DSB.R` | DSB using raw background droplets, with IgG-control subsampling. |
+| 09 | `09.combine_cite.R` | Folds CITE assays into one object, writes the `analysis_bundle`. |
+| 10 | `10.annotate_reference_setup.R` | BoneMarrowMap Symphony reference, uwot path, first projection. |
+| 11 | `11.annotate_ADT_CLR.R` | Projection on the ADT/CLR object. |
+| 12 | `12.annotate_CITE_DSB.R` | Same projection on the CITE_DSB object. |
+| 13 | `13.compare_DSB_vs_CLR_one_sample.R` | DSB vs CLR in one sample (HBDN206-MNpCT). |
+| 14 | `14.compare_DSB_vs_CLR_all_samples.R` | DSB vs CLR across all samples. Writes `data_integration/` 01-06. |
+| 15 | `15.data_integration_composition.R` | Composition by sample, DSB protein-space UMAP, CopyKAT against annotation. Writes `data_integration/` 07-11. |
+| 16 | `16.copykat_pooled.R` | CopyKAT, all cells pooled. |
+| 17 | `17.copykat_per_sample.R` | CopyKAT per donor. |
+| 18 | `18.surfaceome_trial.R` | First surfaceome pass. Exploratory, saves nothing. |
+| 19 | `19.LK1_pilot_run_report.Rmd` | This report. |
+
+Key parameters in step 03: `CreateSeuratObject(min.cells = 3, min.features = 50)`,
+`percent.mt` from `^MT-`, HTO and ADT normalised CLR with `margin = 2`,
+`HTODemux(positive.quantile = 0.80)`, RNA scaled regressing `percent.mt`, PCA and UMAP on
+`dims = 1:30`, `FindClusters(resolution = 0.5)`.
+
+The 0.80 positive quantile is the value that later got swept - `demux_comparison/` carries
+`_all_positive_quantiles` and `_positive_quantile_0.99` variants of every figure.
+
+# 5. Results
+
+## 5.1 First-pass QC and HTO demultiplexing
+
+```{r figs-qc, results='asis'}
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/01_initial_qc_violin.pdf"),
+  "nFeature_RNA, nCount_RNA and percent.mt by `hash.ID`. MOLM13 had the larges amount of RNA and genes detected as expected. No hashed sample was more degraded relative to the others, based on HTO alone.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/02_hto_ridgeplots.pdf"),
+  "CLR-normalised HTO signal per hashtag. Lack of clean bimodality per HTO points to issues with HTO tagging.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/03_umap_demux.pdf"),
+  "HTO global classification, assigned `hash.ID`, and top HTO by raw count. Some clusters that cleanly separate by sample have large number of negative detections.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/05_hto_featureplots.pdf"),
+  "Each HTO on the UMAP. Confirms the hashed samples occupy distinct territory rather than smearing, but that the quality is not great.")
+```
+
+## 5.2 Genotype demultiplexing: HTO vs vireo
+
+Since hashing with HTOs was not robust, we attempted demultiplexing with genotype-based tools: cellSNP and vireo. cellSNP's "donors" were assigned to individual samples based on the largest overlap with HTO-assigned cells. That doubled the number of uniquely demultiplexed cells, and consolidated the usage of this approach for the future. 
+
+```{r demux-comparison-tables, results='asis'}
+dc <- file.path(rd("demux_comparison"), params$sample_name)
+show_table(read_if(file.path(dc, "demux_efficiency_summary.csv")), caption = "Demux efficiency, HTO vs vireo")
+show_table(read_if(file.path(dc, "hto_vireo_agreement_summary.csv")), caption = "HTO / vireo agreement")
+```
+
+```{r figs-demux, results='asis'}
+show_fig(fig("demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/01_demux_efficiency_barplot.pdf"),
+  "Singlet / doublet / negative rates for HTO and vireo side by side. The headline comparison.")
+show_fig(fig("demux_comparison/260423_VH01624_453_222HWMYNX/LK1-GEX/04_upset_HTO_vireo_overlap.pdf"),
+  "UpSet of the call overlap.")
+show_fig(fig("genotype_demux/260423_VH01624_453_222HWMYNX/LK1-GEX/vireo/fig_GT_distance_estimated.pdf"),
+  "Vireo estimated genotype distance between donors. Confirms the donors are genetically distinguishable in the first place.")
+```
+
+## 5.3 ADT / CITE-seq QC
+
+CITE-seq performed well, with a number of markers being present only in selected clusters above background. Biotin (as a marker for glycosylated proteins bound by biotynilated l-PHA) was not detectable.
+
+```{r figs-adt, results='asis'}
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/06_ADT_QC.pdf"),
+  "ADT totals and features per cell.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/07_top_ADT_markers.pdf"),
+  "Top 5 ADT markers by mean CLR plus biotin. Biotin was added deliberately here - this is the start of the biotin thread that runs through to July.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/08_top_ADT_cluster_markers_dotplot.pdf"),
+  "Top ADT markers per RNA cluster.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/10_top10_discriminative_ADT_plus_biotin_UMAP.pdf"),
+  "Most discriminative ADTs with biotin overlaid.")
+show_fig(fig("seurat_demux/260423_VH01624_453_222HWMYNX/11_biotin_expression_by_cluster_violin.pdf"),
+  "Biotin by cluster - the first look at the heterogeneity later split high vs low.")
+```
+
+## 5.4 Annotation (BoneMarrowMap)
+
+Cell annotation was performed by applying tools used in Zeng et al (2025) Bone Marrow Atlas.
+
+```{r figs-annot, results='asis'}
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/01_mapping_error_QC.pdf"),
+  "BoneMarrowMap mapping error. This is the QC that decides which cells get an annotation at all.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/02_projected_predicted_celltypes_pass_only.pdf"),
+  "Predicted cell types on the reference UMAP, cells passing mapping QC only.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/03_projected_samples_pass_only.pdf"),
+  "Samples on the projected UMAP.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/04_projected_pseudotime_pass_only.pdf"),
+  "Projected pseudotime.")
+show_fig(fig("seurat_annotated/260423_VH01624_453_222HWMYNX/projectionFigures/05_projection_by_sampleID_BMM_helper_manual_split.pdf"),
+  "Per-sample projection using the BoneMarrowMap helper.")
+```
+
+Composition is recomputed here from the exported tables rather than taken from the figures the
+pilot scripts saved. Those figures keyed the lineage mapping on the *fine* BoneMarrowMap labels
+(`HSC`, `MPP-MyLy`, `MPP-MkEry`) while the mapping in `annotate.R` expects the *broad* ones
+(`HSC MPP`, `LMPP`), so nearly every cell fell through to "Other" - the saved
+`10_lineage_composition_by_sampleID.csv` puts 94% of HBDN206-MNpCT there. Reading the broad
+table instead fixes that, and lets the bars use the pipeline's own palette.
+
+```{r composition-broad, fig.height=5}
+comp_broad <- read_if(file.path(rd("data_integration"), "broad_celltype_composition_by_sample.csv"))
+if (!is.null(comp_broad)) {
+  cb <- comp_broad %>%
+    mutate(predicted_CellType_Broad = ifelse(is.na(predicted_CellType_Broad),
+                                             "Unannotated", predicted_CellType_Broad))
+  lev <- intersect(celltype_order, unique(cb$predicted_CellType_Broad))
+  lev <- c(setdiff(unique(cb$predicted_CellType_Broad), lev), lev)
+  cb$predicted_CellType_Broad <- factor(cb$predicted_CellType_Broad, levels = lev)
+  print(
+    ggplot(cb, aes(sampleID, percent, fill = predicted_CellType_Broad)) +
+      geom_col(width = 0.7) +
+      scale_fill_manual(values = extend_palette(c(celltype_cols, "Unannotated" = "grey80"), lev)) +
+      labs(x = NULL, y = "% of cells", fill = "Broad cell type",
+           title = "Broad cell type composition per sample") +
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+  )
+}
+```
+
+```{r composition-lineage, fig.height=4.5}
+if (!is.null(comp_broad)) {
+  lin <- comp_broad %>%
+    filter(!is.na(predicted_CellType_Broad)) %>%
+    mutate(lineage = assign_lineage(predicted_CellType_Broad)) %>%
+    group_by(sampleID, lineage) %>%
+    summarise(percent = sum(percent), .groups = "drop") %>%
+    mutate(lineage = factor(lineage, levels = names(lineage_cols)))
+  print(
+    ggplot(lin, aes(sampleID, percent, fill = lineage)) +
+      geom_col(width = 0.7) +
+      scale_fill_manual(values = lineage_cols) +
+      labs(x = NULL, y = "% of cells", fill = "Lineage",
+           title = "Lineage composition per sample") +
+      theme(axis.text.x = element_text(angle = 30, hjust = 1))
+  )
+}
+```
+
+```{r composition-fine, fig.height=7}
+comp_fine <- read_if(file.path(rd("data_integration"), "detailed_celltype_composition_by_sample.csv"))
+if (!is.null(comp_fine)) {
+  cf <- comp_fine %>%
+    filter(!is.na(predicted_CellType)) %>%
+    mutate(predicted_CellType = factor(predicted_CellType, levels = sort(unique(predicted_CellType))))
+  print(
+    ggplot(cf, aes(sampleID, percent, fill = predicted_CellType)) +
+      geom_col(width = 0.7) +
+      scale_fill_manual(values = extend_palette(celltype_cols, levels(cf$predicted_CellType))) +
+      labs(x = NULL, y = "% of cells", fill = "Cell type",
+           title = "Fine-grained cell type composition per sample") +
+      guides(fill = guide_legend(ncol = 2, keyheight = unit(9, "pt"))) +
+      theme(axis.text.x = element_text(angle = 30, hjust = 1),
+            legend.text = element_text(size = 7))
+  )
+}
+```
+
+## 5.5 DSB vs CLR
+
+DSB (Mule et al 2022) was performed to remove bacground ADT noise from individual cells. In this run the DSB approach was benchmarked against the standard CLR used in Seurat vignettes.
+
+```{r figs-dsb-clr, results='asis'}
+show_fig(fig("projectionFigures/06_ADT_CLR_top_marker_projection.pdf"),
+  "Top markers under CLR, on the projected UMAP.")
+show_fig(fig("DSB_vs_CLR_HBDN206-MNpCT/01_marker_mean_shift_DSB_minus_CLR.pdf"),
+  "Per-marker mean shift, DSB minus CLR, for HBDN206-MNpCT (step 13).")
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/01_background_suppression.pdf"),
+  "How much background DSB removes, measured on the isotype / background markers. The main argument for using DSB.")
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/02_expected_marker_specificity.pdf"),
+  paste("Whether expected markers land on the expected cell types, scored against a",
+        "hand-curated panel defined in step 14: CD34 / CD117 / CD133 for stem-progenitor,",
+        "CD33 / CD14 / CD163 / CD11b for myeloid-DC, CD4 / CD8 / CD19 / CD20 / BCMA /",
+        "Syndecan-1 for lymphoid, and CD71 for erythroid. For each marker the script takes",
+        "the **mean signal in its expected broad cell type minus the median across all",
+        "other broad types**, computes that separately under CLR and under DSB, and plots",
+        "one against the other with the diagonal drawn. Points above the diagonal are",
+        "markers DSB made more specific. The underlying numbers, including the per-marker",
+        "delta, are in `02_expected_marker_specificity.csv`."))
+show_fig(fig("data_integration/260423_VH01624_453_222HWMYNX/03_marker_leakage_diffusion.pdf"),
+  paste("Marker signal outside the population it belongs to, on the same expected-marker",
+        "panel. Per marker the script computes `inside_mean` (mean signal in the expected",
+        "population), `outside_mean` (mean everywhere else), the percentage of outside",
+        "cells scoring above zero, and **`leakage_ratio = outside_mean / inside_mean`**.",
+        "Lower is better: a genuinely specific marker should carry little signal outside",
+        "its own population. `03_marker_leakage_diffusion.csv` is sorted by",
+        "`delta_leakage_ratio_DSB_minus_CLR`, so the markers DSB cleans up most are at",
+        "the top."))
+```
+
+```{r dsb-metrics, results='asis'}
+di <- rd("data_integration")
+show_table(read_if(file.path(di, "06_summary_metrics.csv")), caption = "Summary metrics, DSB vs CLR")
+show_table(read_if(file.path(di, "01_background_suppression.csv")), caption = "Background suppression", n = 30)
+show_table(read_if(file.path(di, "02_expected_marker_specificity.csv")), caption = "Expected marker specificity", n = 30)
+show_table(read_if(file.path(di, "03_marker_leakage_diffusion.csv")), caption = "Marker leakage", n = 30)
+```
+
+## 5.6 CNV calls (CopyKAT)
+
+The next challange was to identify cancer vs normal cells within inidividual samples. CopyKAT was run twice: once on all cells pooled (step 16) and then per donor (step 17). The per-donor run produced better results and is what produced the output below.
+
+```{r figs-cnv, results='asis'}
+ck <- file.path(rd("seurat_annotated"), "copykat_annotated")
+if (dir.exists(ck)) {
+  # only subdirectories that actually hold copykat output - the folder also carries
+  # scratch directories that would otherwise render as empty sections
+  donors <- setdiff(list.dirs(ck, recursive = FALSE, full.names = FALSE), "")
+  donors <- donors[vapply(donors, function(d)
+    any(file.exists(file.path(ck, d, c("01_copykat_call_composition_by_sampleID.pdf",
+                                       "copykat_call_composition_by_sampleID.csv",
+                                       "LK1_copykat_copykat_heatmap.jpeg")))), logical(1))]
+  for (d in donors) {
+    cat("\n### ", d, "\n\n", sep = "")
+    show_table(read_if(file.path(ck, d, "copykat_call_composition_by_sampleID.csv")),
+               caption = paste("CopyKAT calls -", d))
+    show_fig(file.path(ck, d, "01_copykat_call_composition_by_sampleID.pdf"),
+             "Aneuploid / diploid proportions.", width_pct = 70)
+    show_fig(file.path(ck, d, "02_copykat_calls_on_projected_RNA_UMAP.pdf"),
+             "CopyKAT calls on the projected UMAP.")
+    show_fig(file.path(ck, d, "03_copykat_by_BoneMarrowMap_broad_celltype.pdf"),
+             "Calls against annotation. The check that 'aneuploid' is not just landing on one cell type for technical reasons.")
+    show_fig(file.path(ck, d, "LK1_copykat_copykat_heatmap.jpeg"),
+             "The CopyKAT CNV heatmap.")
+  }
+}
+```
+
+# 6. Tools
+
+| Tool | Version | Source |
+|---|---|---|
+| Cell Ranger | 10.0.0 | `~/tools/cellranger-10.0.0/cellranger` |
+| Cell Ranger annotation | `refdata-gex-GRCh38-2024-A` | `annotation/` |
+| CITE-seq-Count | to confirm | `scripts/3.hto_count.sbatch`, `4.cite_seq_count.sbatch` |
+| cellsnp-lite | 1.2.3 (htslib 1.23.1) | `cellsnp_env`, used by `04.cellSNP_vireo.sh` |
+| vireo (vireoSNP) | to confirm | `cellsnp_env`, used by `04.cellSNP_vireo.sh` |
+
+R side, the session that renders this report:
+
+```{r session}
+sessionInfo()
+```
+
+# 7. Caveats
+
+1. **The run is superseded.** LK1 was re-sequenced as `260522_VH01624_461_222JLJVNX`, and the
+   re-sequenced data is what later analyses use.
+
+```{r drops, results='asis'}
+cat("\n**Scripts dropped when collating this folder**, and why:\n\n")
+cat("| Dropped | Reason |\n|---|---|\n")
+cat("| `backup/8.create_seurat_object.R` | Byte-identical to `scripts/6a.initial_QC.R` (step 03). |\n")
+cat("| `backup/10b.annotate_DSB.R` | Byte-identical to `scripts/12.identify_cancer_cells.R` (step 12). |\n")
+cat("| `backup/4.initial_QC.R` | Earlier, shorter version of step 03. |\n")
+cat("| `backup/11a.example_cite_copykat.R` | Exploratory scratch, not part of the pipeline. |\n")
+cat("| `add_cite_for_hiep.R` | One-off to hand CITE data to a colleague, no analytical result. |\n\n")
+```
+
+Note that `scripts/12.identify_cancer_cells.R` does not identify cancer cells - it is the
+BoneMarrowMap projection on the DSB object, byte-identical to `backup/10b.annotate_DSB.R`.
+The name is misleading, so it is `12.annotate_CITE_DSB.R` here.
