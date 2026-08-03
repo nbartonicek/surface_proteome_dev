@@ -1,0 +1,316 @@
+---
+title: "LK1 re-sequenced"
+subtitle: "`r params$run_id`"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  run_id: "260522_VH01624_461_222JLJVNX"
+  prev_run: "260423_VH01624_453_222HWMYNX"
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  sample_name: "LK1-GEX"
+---
+
+<!--
+# ------------------------------------------------------------------
+# LK1 re-sequenced - step 05 of 05
+#
+# Renders the lab archive report from the outputs of steps 01-04. Tables come
+# from the summary CSVs each step wrote, figures are rasterised out of the PDFs
+# those steps produced.
+#
+# Render with ./render_report.sh, which also prints the HTML to PDF. pandoc is
+# not on PATH on this laptop; it is inside the RStudio bundle.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+
+theme_set(theme_bw(base_size = 12))
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+# Convert a PDF figure to PNG and emit an image tag, so figures render inline
+# rather than being named as paths. Copied from 21.run_qc_report.Rmd.
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) FALSE)
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+embed_image <- function(path, width_pct = 100) {
+  if (is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', path, width_pct))
+}
+
+# Anything not on disk is skipped without comment.
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  if (grepl("\\.pdf$", path, ignore.case = TRUE)) {
+    embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+  } else embed_image(path, width_pct = width_pct)
+}
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+proj <- params$proj
+run  <- params$run_id
+prev <- params$prev_run
+res  <- file.path(proj, "results")
+bm   <- file.path(res, "benchmarking", "depth_benchmarking")
+bmd  <- file.path(res, "benchmarking", "depth_benchmarking_cellranger_downsampled")
+
+read_if <- function(path, ...) {
+  if (!file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+# Figures this report imports, resolved up front so the header can state when
+# the last of them was produced.
+FIGS <- c(
+  file.path(bm, c("comparison_genes_vs_AML_atlas.pdf", "comparison_UMIs_vs_AML_atlas.pdf",
+                  "median_genes_barplot.pdf", "median_UMIs_barplot.pdf",
+                  "combined_benchmark_plot.pdf")),
+  file.path(bmd, c("curve_cells_detected_vs_AML.pdf", "curve_genes_per_cell_vs_AML.pdf",
+                   "curve_UMIs_per_gene_vs_AML.pdf", "curve_UMIs_per_cell_vs_AML.pdf",
+                   "curve_reads_per_cell.pdf",
+                   "violin_genes_UMIs_per_cell_full_depth_vs_AML_10x3v3.pdf",
+                   "barplot_cell_counts_by_cell_type.pdf",
+                   "boxplot_cells_per_donor_by_assay.pdf"))
+)
+FIGS <- FIGS[file.exists(FIGS)]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+```
+
+**Run:** `` `r run` `` (re-sequencing of `` `r prev` ``)
+
+**Status:** current. This is the LK1 data used by all later analyses; the pilot run
+`` `r prev` `` it replaces is superseded.
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `05.LK1_resequenced_report.Rmd`, from the outputs of
+steps 01-04 in this folder.
+
+LK1 was sequenced a second time to decide whether the pilot depth was sufficient, and whether
+the rest of the cohort needed deeper sequencing. The comparison is against the pilot run and
+against the published AML scAtlas.
+
+For full report, download `LK1_resequenced_report.html` in the attachment and open in a
+browser.
+
+Code used - attached and in the github repository:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/LK1-resequenced>
+
+# Aim
+
+Identify whether we are getting a comparable amount of key features to the AML scAtlas -
+cells, genes and UMIs - and evaluate whether further sequencing is required, via:
+
+- subsampling of reads
+- differential expression between cell types
+- separation of clusters
+
+# Conclusions
+
+- AML scAtlas basic QC stats are comparable to our dataset, on average lower
+- subsampling of reads shows that we have reached saturation levels for cell detection
+- we have **not** reached saturation levels for: number of genes detected; number of UMIs per
+  gene; number of DE genes for cells with either low (T-cells) or high (HSCs) numbers of genes
+  expressed
+- cluster separation of HSCs from other precursors (MEP) is slightly better for re-sequenced
+  data
+- re-sequencing gained about 25% more genes and 39% more UMIs per cell for essentially no
+  extra cells, which is the expected shape when a library is under-sequenced rather than
+  under-loaded
+
+# 1. What re-sequencing gained
+
+```{r gain, results='asis'}
+show_table(read_if(file.path(bm, "first_run_vs_resequenced_gain_summary.csv")),
+           caption = "First run vs re-sequenced, per-cell gain")
+show_table(read_if(file.path(bm, "benchmark_summary.csv")),
+           caption = "Our two runs against the AML scAtlas")
+```
+
+Cell numbers barely move while genes and UMIs per cell rise by a quarter and a third
+respectively. That is the signature of a library that was sequenced too shallowly rather than
+loaded too lightly - more reads recover more of the transcriptome from the cells already
+captured, rather than finding new cells.
+
+Both runs sit **above** the atlas medians on genes and UMIs per cell, which is what "atlas
+stats are on average lower" in the conclusions refers to.
+
+```{r saturation, results='asis'}
+m <- read_if(file.path(bm, "cellranger_metrics_summary_combined.csv"))
+if (!is.null(m)) {
+  keep <- intersect(c("Run", "Sample ID", "Estimated Number of Cells", "Mean Reads per Cell",
+                      "Median Genes per Cell", "Number of Reads", "Sequencing Saturation"),
+                    names(m))
+  show_table(m[, keep, drop = FALSE], caption = "Cell Ranger metrics, both runs")
+}
+```
+
+Sequencing saturation stays in the mid-40s in both runs - consistent with the curves below,
+where cell detection has plateaued but per-cell content has not.
+
+```{r figs-gain, results='asis'}
+show_fig(file.path(bm, "median_genes_barplot.pdf"), "Median genes per cell, first run vs re-sequenced.")
+show_fig(file.path(bm, "median_UMIs_barplot.pdf"), "Median UMIs per cell, first run vs re-sequenced.")
+show_fig(file.path(bm, "combined_benchmark_plot.pdf"), "Combined benchmark across both runs and the atlas.")
+```
+
+# 2. Against the AML scAtlas
+
+```{r figs-atlas, results='asis'}
+show_fig(file.path(bm, "comparison_genes_vs_AML_atlas.pdf"),
+  "Genes per cell, our runs against the atlas.")
+show_fig(file.path(bm, "comparison_UMIs_vs_AML_atlas.pdf"),
+  "UMIs per cell, our runs against the atlas.")
+show_fig(file.path(bmd, "violin_genes_UMIs_per_cell_full_depth_vs_AML_10x3v3.pdf"),
+  paste("Restricted to 10X 3' v3, the assay that matches ours - the fair comparison, since",
+        "the atlas pools several chemistries with different capture efficiency."))
+show_fig(file.path(bmd, "barplot_cell_counts_by_cell_type.pdf"),
+  "Atlas cell counts by cell type, for context on what the reference contains.")
+show_fig(file.path(bmd, "boxplot_cells_per_donor_by_assay.pdf"),
+  "Cells per donor by assay in the atlas.")
+```
+
+# 3. Saturation curves
+
+Cell Ranger's molecule-level downsampling, re-analysed at each depth and plotted against the
+atlas. These are the figures the saturation conclusions rest on.
+
+```{r figs-curves, results='asis'}
+show_fig(file.path(bmd, "curve_cells_detected_vs_AML.pdf"),
+  "**Cells detected vs depth - this one has plateaued.** Extra reads do not recover extra cells.")
+show_fig(file.path(bmd, "curve_genes_per_cell_vs_AML.pdf"),
+  "**Genes per cell vs depth - still climbing.** No plateau, so more depth would still add genes.")
+show_fig(file.path(bmd, "curve_UMIs_per_gene_vs_AML.pdf"),
+  "**UMIs per gene vs depth - still climbing.**")
+show_fig(file.path(bmd, "curve_UMIs_per_cell_vs_AML.pdf"), "UMIs per cell vs depth.")
+show_fig(file.path(bmd, "curve_reads_per_cell.pdf"), "Reads per cell across the depth series.")
+```
+
+# 4. Effect of depth on downstream analysis
+
+Two things were checked beyond raw counts: whether differential expression between cell types
+holds up at lower depth, and whether clusters still separate.
+
+Cluster counts across the depth series, from the analysis in step 07 (reproduced from the
+read-depth deck, as the figure itself is not among the saved outputs):
+
+| Depth | Total clusters | HSC clusters |
+|---|---|---|
+| 10% subsample | 5 | 2 |
+| 30% subsample | 8 | 3 |
+| 60% subsample (~pilot 1) | 8 | 4 |
+| Full dataset | 9 | 4 |
+
+The full dataset resolves one cluster the 60% subsample does not - naive T-cells - and HSC
+separation from other precursors improves with depth. The pilot run sits at roughly the 60%
+point of the re-sequenced data, which is why its HSC/MEP separation is the weaker of the two.
+
+# 5. Data locations
+
+| What | Location |
+|---|---|
+| Sequencing facility output | `` `r file.path("/pipeline/Runs/NextSeq", run, "ProjectFolders/Project_Lev-Kats")` `` |
+| Working copy, cluster | `` `r file.path("/scratch/users/nbartonicek/projects/amgen/raw_reseq", run)` `` - `Sample_LK1-GEX/` |
+| Cell Ranger output | `` `r file.path("/scratch/users/nbartonicek/projects/amgen/results/cellranger_withbam", run)` `` |
+| Depth benchmarking | `results/benchmarking/depth_benchmarking/` and `.../depth_benchmarking_cellranger_downsampled/` |
+| Reference | Cell Ranger annotation `refdata-gex-GRCh38-2024-A` |
+
+```{r out-dirs, results='asis'}
+# Shallow listing only. cellranger_withbam holds ~6,300 files for this run and
+# stat-ing all of them over the SMB mount takes longer than the whole render,
+# so this walks the immediate children and uses their timestamps.
+dirs <- c("cellranger_withbam", "cite_seq_count", "emptydrops", "genotype_demux",
+          "scDblFinder", "seurat_demux", "cellbender")
+rows <- lapply(dirs, function(d) {
+  p <- file.path(res, d, run)
+  if (!dir.exists(p)) return(NULL)
+  e <- list.files(p, full.names = TRUE, all.files = FALSE)
+  e <- e[!grepl("(^|/)\\._", e)]
+  if (!length(e)) return(NULL)
+  dt <- as.Date(file.info(e)$mtime)
+  tibble(directory = d, entries = length(e),
+         first = min(dt, na.rm = TRUE), last = max(dt, na.rm = TRUE))
+})
+show_table(bind_rows(rows),
+           caption = paste0("Output directories under results/<dir>/", run,
+                            " (top-level entries)"))
+```
+
+The re-sequenced run was then taken through the standard processing - emptyDrops,
+CITE-seq-Count, cellSNP/vireo, scDblFinder, CellBender. Those steps are benchmarked in their
+own reports rather than here; this one covers the re-sequencing decision only.
+
+# 6. What was run, in order
+
+| Step | Script | What it does |
+|---|---|---|
+| 01 | `01.cellranger_resequence.sh` | Cell Ranger 10.0.0 count on the re-sequenced LK1 GEX library. |
+| 02 | `02.investigate_resequencing.R` | First run vs re-sequenced: cells, genes, UMIs, and the gain summary. |
+| 03 | `03.subsampling_vs_atlas.R` | Our depth against the AML scAtlas, plus the molecule-level saturation curves. |
+| 04 | `04.DE_subsampling.R` | Pseudobulk DE at each depth, then cluster HBDN501-AML-KMT2A and score separation. |
+| 05 | `05.LK1_resequenced_report.Rmd` | This report. |
+
+Each analysis appears once. Where a script went through successive revisions, the version
+kept is the one that produced the outputs shown, and its header names the revisions it
+supersedes:
+
+| Step | Kept | Superseded |
+|---|---|---|
+| 03 | `1c1...` (2026-06-01) | `1c...` (2026-05-27, first pass). A later `1c2...` (2026-06-16) also exists but produced no output - nothing under `depth_benchmarking*` postdates 2026-06-01 - and is *shorter* than the kept version, so it is not a strict superset. |
+| 04 | `1d2...` (2026-06-01) | `1d...` (2026-05-28, first pass) and `1d3...DE_subsampling_LK2.R`, which is byte-identical despite the `_LK2` name and analyses LK1. |
+
+# 7. Tools
+
+| Tool | Version | Source |
+|---|---|---|
+| Cell Ranger | 10.0.0 | `~/tools/cellranger-10.0.0/cellranger` - the re-sequencing needed this version |
+| Cell Ranger annotation | `refdata-gex-GRCh38-2024-A` | `annotation/` |
+| AML scAtlas | published reference | `results/AML_atlas/` |
+
+```{r session}
+sessionInfo()
+```
+
+# 8. Caveats
+
+1. **The depth series here is Cell Ranger's molecule-level downsampling**, not a FASTQ-level
+   re-run. The seqtk FASTQ downsampling with `frac_000` to `frac_090` directories is a
+   separate, later exercise carried out on LK2 (`cellranger_downsampled_reseq/260528…`,
+   2026-06-15) and does not belong to this report.
+2. **Step 05 hardcodes a downsampled path under this run** that does not exist
+   (`cellranger_downsampled_reseq/260522…`); only the LK2 equivalent is on disk. It runs
+   against the molecule-level outputs regardless, but the path should be corrected before the
+   script is reused.
+3. The cluster-count table in section 4 is taken from the read-depth deck; the figure behind
+   it is not among the saved outputs.
