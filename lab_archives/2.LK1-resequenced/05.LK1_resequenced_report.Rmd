@@ -125,7 +125,7 @@ For full report, download `LK1_resequenced_report.html` in the attachment and op
 browser.
 
 Code used - attached and in the github repository:
-<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/LK1-resequenced>
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/2.LK1-resequenced>
 
 # Aim
 

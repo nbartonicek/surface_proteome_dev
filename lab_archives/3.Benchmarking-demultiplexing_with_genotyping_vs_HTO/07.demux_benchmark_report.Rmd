@@ -127,7 +127,7 @@ For full report, download `demux_benchmark_report.html` in the attachment and op
 browser.
 
 Code used - attached and in the github repository:
-<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/Benchmarking-demultiplexing_with_genotyping_vs_HTO>
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/3.Benchmarking-demultiplexing_with_genotyping_vs_HTO>
 
 # Aim
 

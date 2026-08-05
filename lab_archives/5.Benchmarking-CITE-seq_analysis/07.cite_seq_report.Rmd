@@ -1,0 +1,324 @@
+---
+title: "Benchmarking: CITE-seq analysis"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  pilot_run: "260423_VH01624_453_222HWMYNX"
+  run: "260528_VH01624_464_222K7VKNX"
+---
+
+<!--
+# ------------------------------------------------------------------
+# CITE-seq benchmark - step 07 of 07
+#
+# Renders the lab archive report from the outputs of steps 01-06.
+# Render with ./render_report.sh, which also prints the HTML to PDF.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+theme_set(theme_bw(base_size = 12))
+options(scipen = 999)
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) {
+    cat(sprintf("\n_(could not rasterise `%s`: %s)_\n\n",
+                basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+}
+
+read_if <- function(path, ...) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+proj  <- params$proj
+res   <- file.path(proj, "results")
+run   <- params$run
+pilot <- params$pilot_run
+
+dsb_dir   <- file.path(res, "cite_seq_dsb")
+qc_dir    <- file.path(res, "benchmarking", "cite_qc_then_dsb")
+igg_dir   <- file.path(res, "benchmarking", "dsb_igg_subsample")
+unmap_dir <- file.path(res, "adt_unmapped_diagnostics")
+unmap_inv <- file.path(res, "adt_unmapped_investigator")
+cmp_dir   <- file.path(res, "seurat_annotated")
+
+find_one <- function(root, name) {
+  if (is.null(root) || !dir.exists(root)) return(NA_character_)
+  hits <- list.files(root, pattern = paste0("^", gsub("\\.", "\\\\.", name), "$"),
+                     recursive = TRUE, full.names = TRUE)
+  hits <- hits[!grepl("(^|/)\\._", hits)]
+  if (!length(hits)) NA_character_ else hits[1]
+}
+
+all_pdfs <- function(root) {
+  if (!dir.exists(root)) return(character(0))
+  f <- list.files(root, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE)
+  f[!grepl("(^|/)\\._", f)]
+}
+
+FIGS <- unique(c(all_pdfs(dsb_dir), all_pdfs(qc_dir), all_pdfs(igg_dir),
+                 all_pdfs(unmap_dir),
+                 find_one(cmp_dir, "01_marker_mean_shift_DSB_minus_CLR.pdf")))
+FIGS <- FIGS[!is.na(FIGS) & file.exists(FIGS)]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+```
+
+**Runs:** pilot `` `r pilot` `` for the first DSB evaluation and the CLR-vs-DSB comparison,
+then `` `r run` `` (LK2) for the production CITE QC.
+
+**Status:** settled. DSB is the normalisation the project uses; CLR is kept only as the
+comparison baseline.
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `07.cite_seq_report.Rmd`, from the outputs of steps
+01-06 in this folder.
+
+ADT counts arrive from CITE-seq-Count as raw tag counts per barcode, and are dominated by
+ambient antibody. Two normalisations were compared: CLR, which scales within each cell, and
+DSB, which subtracts a background estimated from empty droplets and then removes per-cell
+technical noise using the isotype controls.
+
+For full report, download `cite_seq_report.html` in the attachment and open in a browser.
+
+Code used - attached and in the github repository:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/5.Benchmarking-CITE-seq_analysis>
+
+# Aim
+
+Decide how to normalise the ADT signal, and confirm the counting step is not losing reads:
+
+- does DSB give more specific markers than CLR
+- is the background estimate stable, or an artefact of which isotype controls are used
+- how many ADT reads come back unmapped, and whether the tag reference and read structure
+  are correct
+
+# Conclusions
+
+- **DSB gives increased marker specificity over CLR**, scored as mean of the expected
+  population divided by median background, and is what the project uses
+- the background estimate is stable: 30x random subsampling of the isotype controls does not
+  move it materially
+- populations are called at **3 SD over background**, at both the broad and the granular
+  cell type level
+- noise is estimated from ten isotype controls - IgG_Fc, Mouse IgG1, IgG2a and IgG2b, Rat
+  IgG2b, IgG1_k, IgG1_l, IgG2a_k and IgG2c_k, and Armenian Hamster IgG
+- mapping is not a problem: CITE-seq-Count maps **97% of ADT reads** and 95% of HTO reads
+- the unmapped remainder is **poly-G** - 90 bases of G, 99.9% of the top-100 unmapped reads on
+  the pilot ADT and 98.9% on HTO. That is the two-colour chemistry artefact, where a dark or
+  failed cluster is base-called as G. These are not antibody tags, so they are neither a
+  reference problem nor reads from discarded droplets
+- step 06 as run is a whole-library check rather than an unmapped-read diagnosis, and the
+  library passes it: the abundant sequences are exact matches to the reference in the correct
+  orientation
+
+# 1. Counting the tags
+
+Step 01 runs CITE-seq-Count against the emptyDrops barcode whitelist, so the ADT matrix
+covers the same barcodes as the RNA. Step 02 is the same command with `-u` and `-ut 100000`
+added, which writes the unmapped tags out instead of discarding them - that table is what
+step 06 diagnoses. Both are kept because the production run does not produce the unmapped
+output, and the diagnostic run was done separately in July.
+
+Note that the ADT is counted **outside** Cell Ranger: the Cell Ranger matrix for these runs
+contains `Gene Expression` features only. Anything that operates on the Cell Ranger matrix,
+CellBender included, therefore never sees the protein data.
+
+# 2. CITE QC and DSB
+
+Step 03 is the main workflow: load the demultiplexed object, import ADT counts for the
+emptyDrops cells, do the CLR-based QC first, then select background droplets from the raw
+output and run DSB with matched plots so the two can be compared like for like.
+
+```{r qc-figs, results='asis'}
+qnotes <- list(
+  "03_cell_QC_RNA_ADT_raw.pdf" = "Cell-level QC on RNA and raw ADT together.",
+  "04_raw_ADT_marker_distributions.pdf" = "Raw ADT counts per marker, before any normalisation - the ambient signal is what makes these unusable as they stand.",
+  "05_CLR_ADT_marker_distributions.pdf" = "The same markers after CLR.",
+  "06_RNA_umap_QC.pdf" = "RNA UMAP used for the overlays below.",
+  "07_CLR_ADT_featureplots_top_markers.pdf" = "Top markers under CLR on the RNA UMAP.",
+  "08_CLR_ADT_discriminative_markers.pdf" = "The most discriminative markers under CLR.",
+  "09_CLR_heatmap_by_RNA_cluster.pdf" = "CLR signal by RNA cluster.",
+  "11_CITE_marker_CLR_positive_cells_by_sample.pdf" = "Positive cells per marker per sample under CLR."
+)
+for (nm in names(qnotes)) show_fig(find_one(dsb_dir, nm), qnotes[[nm]])
+```
+
+# 3. Background and the isotype controls
+
+DSB estimates background from empty droplets and then removes per-cell technical noise using
+the isotype controls. Step 04 checks that estimate is not an artefact of which isotypes happen
+to be in the panel, by subsampling them 30 times at random and re-deriving the background.
+
+```{r igg-figs, results='asis'}
+show_fig(find_one(igg_dir, "dsb_igg_reduction_subsampling.pdf"),
+  paste("Background estimate across 30 random subsamples of the isotype controls. A tight",
+        "spread means the estimate does not depend on which controls are included, which is",
+        "what justifies using it per cell."))
+```
+
+# 4. DSB against CLR
+
+Step 05 is the head-to-head, on HBDN206-MNpCT.
+
+```{r cmp-figs, results='asis'}
+show_fig(find_one(cmp_dir, "01_marker_mean_shift_DSB_minus_CLR.pdf"),
+  paste("Per-marker mean shift, DSB minus CLR. Markers above zero gained signal relative to",
+        "background under DSB."))
+```
+
+```{r cmp-tables, results='asis'}
+for (nm in c("01_marker_mean_shift_DSB_minus_CLR.csv",
+             "02_RNA_protein_correlation_DSB_vs_CLR.csv",
+             "03_marker_celltype_specificity_DSB_vs_CLR.csv",
+             "07_expected_marker_specificity_DSB_vs_CLR.csv")) {
+  show_table(read_if(find_one(cmp_dir, nm)), caption = nm, n = 25)
+}
+```
+
+The specificity score behind the conclusion is **mean of the expected population divided by
+median background**, computed per marker against a hand-curated panel: CD163, CD14, CD33 and
+CD11b for myeloid/DC; CD34, CD117 and CD133 for stem/progenitor; CD4, CD8, CD19 and CD20 for
+lymphoid; CD71 for erythroid. Cells are called positive at 3 SD over background.
+
+# 5. Unmapped ADT reads
+
+**Read this section for what it is.** Step 06 was run with `input_mode <- "full_fastq"`
+against the entire LK2 ADT R2 file, not against the unmapped reads. Everything below therefore
+describes the whole library, and is a check that the tag reference and read structure are
+right - which they are. It is not a diagnosis of the unmapped reads.
+
+The unmapped reads are separately accounted for. CITE-seq-Count's own `run_report.yaml` puts
+mapping at **97%** for ADT and **95%** for HTO, and its `unmapped.csv` shows what the
+remainder is:
+
+| Run / library | Poly-G share of the top-100 unmapped |
+|---|---|
+| Pilot ADT (`260423`, LK1) | 99.9% |
+| Pilot HTO (`260423`, LK1) | 98.9% |
+| LK2 ADT (`260528`) | 67.5% |
+
+Those sequences are 90 bases of `G`. On two-colour chemistry a dark or failed cluster is
+base-called as G, so this is empty flowcell rather than anything about the antibodies, the
+reference or the droplets. `unmapped.csv` lists only the top 100 sequences, so this
+characterises the dominant species rather than every unmapped read - and the LK2 figure of
+67.5% means a third of its unmapped reads are something else, which has not been looked at.
+
+```{r unmapped-figs, results='asis'}
+show_fig(find_one(unmap_dir, "edit_distance_histogram.pdf"),
+  paste("Edit distance from each observed barcode to the nearest known tag. A pile-up at",
+        "distance 1-2 means sequencing error; a pile-up further out means the observed",
+        "sequences are not the tags at all."))
+show_fig(find_one(unmap_dir, "top_observed_barcodes.pdf"),
+  "The most frequent observed barcodes among the unmapped reads.")
+```
+
+```{r unmapped-tables, results='asis'}
+for (nm in c("observed_barcode_counts.csv", "observed_vs_known_distance.csv",
+             "offset_scan_summary.csv", "reverse_complement_distance.csv")) {
+  show_table(read_if(find_one(unmap_inv, nm)), caption = nm, n = 20)
+}
+```
+
+The four outputs test four explanations in turn: whether the observed sequences resemble the
+known tags at all, how far they are from them, whether the tag sits at a different offset in
+the read than expected, and whether it has been reverse complemented. Across the top 1,000
+observed sequences, covering 96% of reads, 93 percentage points are exact matches to a real
+antibody and 96 are within two edits, while the reverse-complement check sits at distance 5-7
+with no matches. The library and reference are sound.
+
+To diagnose the unmapped reads properly, step 06 would be re-run with
+`input_mode <- "unmapped_fastq"` against the unmapped output from step 02
+(`cite_seq_count/<run>/unmapped_tags_<sample>.csv`).
+
+# 6. What was run, in order
+
+| Step | Script | What it does |
+|---|---|---|
+| 01 | `01.cite_seq_count.sbatch` | CITE-seq-Count on the ADT library, emptyDrops whitelist. Production counting. |
+| 02 | `02.cite_seq_count_unmapped.sbatch` | Same run with `-u` / `-ut 100000` so unmapped tags are written out. |
+| 03 | `03.CITE_qc.R` | CITE QC then DSB: raw totals, CLR, marker distributions, overlays, heatmaps, background selection, DSB. |
+| 04 | `04.evaluate_DSB.R` | DSB against background droplets with 30x isotype subsampling. |
+| 05 | `05.compare_DSB_vs_CLR.R` | Head-to-head DSB vs CLR on one sample. |
+| 06 | `06.CITE_unmapped_QC.R` | Diagnoses the unmapped ADT reads. |
+| 07 | `07.cite_seq_report.Rmd` | This report. |
+
+`scripts/7d.DSB_cluster_resolution.R` is not a separate step: it is step 05 re-pointed at LK2,
+differing by twelve lines that are all run and sample variables. Change `run`, `sample_name`
+and `sample_short` in step 05 to reproduce it. Its name is misleading - it is not a
+cluster-resolution analysis.
+
+# 7. Data locations
+
+| What | Location |
+|---|---|
+| ADT counts | `results/cite_seq_count/<run>/adt_counts_*/` |
+| CITE QC and DSB | `results/cite_seq_dsb/<run>/` |
+| Earlier QC-then-DSB outputs | `results/benchmarking/cite_qc_then_dsb/` |
+| Isotype subsampling | `results/benchmarking/dsb_igg_subsample/` |
+| DSB vs CLR | `results/seurat_annotated/<run>/projectionFigures/DSB_vs_CLR_<donor>/` |
+| Unmapped diagnostics | `results/adt_unmapped_diagnostics/` and `results/adt_unmapped_investigator/` |
+
+# 8. Tools
+
+| Tool | Version | Source |
+|---|---|---|
+| CITE-seq-Count | to confirm | steps 01 and 02 |
+| dsb | see session below | denoised and scaled by background |
+| Seurat CLR | see session below | comparison baseline |
+
+```{r session}
+sessionInfo()
+```
+
+# 9. Caveats
+
+1. **The residual CITE analysis is not included.** `scripts/13.CITE_residuals.R` belongs to this
+   period but cannot be run as written - it never loads an object, expecting `seu_dsb` and
+   `celltype_cols` to exist in the session already - and its output directory
+   `results/benchmarking/residual_cite_analysis` is empty. It will be added once it has been
+   run.
+2. **The CLR-vs-DSB comparison is one donor**, HBDN206-MNpCT on the pilot run. The LK2
+   equivalent exists only as the re-pointed script noted above.
+3. **CellBender does not touch the protein data** in the current pipeline, since the Cell
+   Ranger matrix is `Gene Expression` only. Whether ambient protein removal before DSB helps
+   is a separate question, and is not tested here.

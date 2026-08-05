@@ -117,7 +117,7 @@ and subtracts it.
 For full report, download `cell_calling_report.html` in the attachment and open in a browser.
 
 Code used - attached and in the github repository:
-<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/Benchmarking-cell_calling_and_ambient_RNA_removal>
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/4.Benchmarking-cell_calling_and_ambient_RNA_removal>
 
 # Aim
 
