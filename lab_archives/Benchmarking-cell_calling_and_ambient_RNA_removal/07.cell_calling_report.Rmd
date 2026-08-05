@@ -1,0 +1,347 @@
+---
+title: "Benchmarking: cell calling and ambient RNA removal"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  run: "260528_VH01624_464_222K7VKNX"
+  sample: "LK2-GEX"
+---
+
+<!--
+# ------------------------------------------------------------------
+# Cell calling and ambient RNA removal - step 07 of 07
+#
+# Renders the lab archive report from the outputs of steps 01-06.
+# Render with ./render_report.sh, which also prints the HTML to PDF.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+theme_set(theme_bw(base_size = 12))
+
+# R switches to scientific notation on wide-ranging values, which makes the
+# metrics tables unreadable. A large penalty keeps everything in plain digits.
+options(scipen = 999)
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) {
+    # say so rather than dropping the figure silently - a quiet failure here is
+    # indistinguishable from the figure not existing
+    cat(sprintf("\n_(could not rasterise `%s`: %s)_\n\n",
+                basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+}
+
+read_if <- function(path, ...) {
+  if (is.na(path) || !file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+proj <- params$proj
+run  <- params$run
+samp <- params$sample
+res  <- file.path(proj, "results")
+nf   <- file.path(proj, "results_nf")
+
+cmp <- file.path(res, "cellbender_comparison", run, samp)
+cb  <- file.path(res, "cellbender", run, samp)
+
+# Find a file by name anywhere under a root, so nesting differences do not matter.
+find_one <- function(root, name) {
+  if (!dir.exists(root)) return(NA_character_)
+  hits <- list.files(root, pattern = paste0("^", gsub("\\.", "\\\\.", name), "$"),
+                     recursive = TRUE, full.names = TRUE)
+  hits <- hits[!grepl("(^|/)\\._", hits)]
+  if (!length(hits)) NA_character_ else hits[1]
+}
+
+FIGS <- c(list.files(cmp, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE),
+          list.files(cb,  pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE))
+FIGS <- FIGS[!grepl("(^|/)\\._", FIGS) & file.exists(FIGS)]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+```
+
+**Run:** `` `r run` `` / `` `r samp` ``. The comparison was carried out on LK2; CellBender was
+also run on LK1-resequenced.
+
+**Status:** settled for the pipeline, which runs both emptyDrops and CellBender and records
+their overlap per run.
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `07.cell_calling_report.Rmd`, from the outputs of steps
+01-06 in this folder.
+
+Cell Ranger's own cell calling is conservative and drops small cells, T-cells in particular.
+Two alternatives were tested: emptyDrops, which decides whether a droplet holds more structured
+RNA than the ambient profile predicts, and CellBender, which models the ambient contamination
+and subtracts it.
+
+For full report, download `cell_calling_report.html` in the attachment and open in a browser.
+
+Code used - attached and in the github repository:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/Benchmarking-cell_calling_and_ambient_RNA_removal>
+
+# Aim
+
+Decide which barcodes to carry forward as real cells, and how much ambient RNA to remove:
+
+- does emptyDrops recover the small cells Cell Ranger discards
+- does CellBender agree with emptyDrops on which barcodes are cells
+- what `expected-cells` and `total-droplets-included` should CellBender use
+- what do the barcodes the two methods disagree about actually look like
+
+# Conclusions
+
+- Cell Ranger is fairly conservative and eliminates small cells, T-cells in particular;
+  emptyDrops recovers roughly 1,000 more cells on run 1 (24,334)
+- run 2 raises the opposite problem: emptyDrops calls **fewer** cells than Cell Ranger
+  (31,198 against 32,846), and the extra barcodes are largely dead cells - so more calls is
+  not automatically better
+- the working combination is emptyDrops plus CellBender with a mitochondrial cleanup, rather
+  than either tool alone
+- MT cutoffs are taken from the literature rather than picked here: van Galen 20%, Petti 10%,
+  Beneyto 20%, Zeng 20%
+- the fraction of counts removed stays under 5% in every configuration tried (2.3% to 4.3%),
+  so CellBender is not stripping a large part of the signal
+- the droplet padding matters less than expected: `+15,000` and `+30,000` total droplets give
+  substantially overlapping barcode sets, which is what the Venn diagrams below show
+- raising `total-droplets-included` raises `found_cells` (35,358 to 38,215 on LK2) while
+  *lowering* the fraction removed, so the two settings trade off against each other rather
+  than one dominating
+
+# 1. emptyDrops
+
+Step 01 runs `DropletUtils::emptyDrops` on the raw Cell Ranger matrix and keeps barcodes at
+FDR <= 0.01. It estimates the ambient RNA profile from the low-count droplets and then tests,
+per droplet, whether its content is more structured than that profile would produce. That is
+what lets it recover small cells a simple UMI-rank cutoff discards.
+
+```{r ed-table, results='asis'}
+show_table(read_if(find_one(file.path(res, "emptydrops", run), "emptydrops_summary.csv")),
+           caption = "emptyDrops summary")
+```
+
+# 2. CellBender and the droplet sweep
+
+CellBender 0.3.0 was run in a container (step 02). `expected-cells` is estimated from the data;
+`total-droplets-included` sets how far down the UMI rank the model looks for ambient signal.
+Two settings were tried:
+
+| Step | `total-droplets-included` | Output |
+|---|---|---|
+| 02 | expected + 15,000 | `cellbender/<run>/<sample>/` |
+| 03 | expected + 30,000 | `cellbender/<run>/<sample>_e30000/` |
+
+Those are the `32k` and `32k30k` arms in the figure names below.
+
+Four configurations were run in total, three of them on LK2. The numbers below are from the
+CellBender metrics of each run, as reported in the 2026-07-13 progress slides:
+
+| | LK1 23k+15k | LK2 33k+15k | LK2 25k+15k | LK2 33k+30k |
+|---|---|---|---|---|
+| `expected_cells` | 23,569 | 32,846 | 25,000 | 32,846 |
+| `found_cells` | 23,595 | 35,358 | 34,658 | 38,215 |
+| `fraction_counts_removed` | 0.023 | 0.034 | 0.043 | 0.031 |
+
+The diagnostic below is the panel to read: the black line is the UMI count per barcode in
+rank order, the red points are CellBender's inferred cell probability. Where the red cloud
+breaks up is where the model stops being confident a droplet holds a cell.
+
+```{r cb-slide-figs, results='asis'}
+sf <- "figures_from_slides"
+panels <- list(
+  c("cellbender_LK1_23k_15k.png",  "**LK1, expected 23,569 + 15,000 droplets.** 23,595 cells found, 2.3% of counts removed - the cleanest of the four, and the boundary is sharp."),
+  c("cellbender_LK2_33k_15k.png",  "**LK2, expected 32,846 + 15,000.** 35,358 cells, 3.4% removed. The adopted setting (step 02)."),
+  c("cellbender_LK2_25k_15k.png",  "**LK2, expected 25,000 + 15,000.** 34,658 cells, 4.3% removed - understating expected-cells costs the most signal of the three."),
+  c("cellbender_LK2_33k_30k.png",  "**LK2, expected 32,846 + 30,000** (step 03). 38,215 cells, 3.1% removed. Widening the droplet window finds more cells and removes proportionally less.")
+)
+for (p in panels) {
+  f <- file.path(sf, p[1])
+  if (file.exists(f)) {
+    cat(sprintf("\n**`%s`**\n\n%s\n\n", p[1], p[2]))
+    cat(sprintf('<img src="%s" style="width:75%%"/>\n\n', f))
+  }
+}
+ref <- file.path(sf, "cellbender_knee_reference.png")
+if (file.exists(ref)) {
+  cat("\nFor reference, CellBender's own illustration of what the UMI-rank curve looks like at",
+      "low background, high background, and outright QC failure:\n\n")
+  cat(sprintf('<img src="%s" style="width:90%%"/>\n\n', ref))
+}
+```
+
+```{r cb-metrics, results='asis'}
+# CellBender writes one row of many columns, spanning 0.01 to ~3e8. Pivot it
+# long and format per metric: counts as whole numbers with separators,
+# fractions and ratios to three decimals.
+cbm <- read_if(find_one(cb, paste0(samp, "_cellbender_metrics.csv")))
+if (!is.null(cbm)) {
+  if (nrow(cbm) == 1 && ncol(cbm) > 2) {
+    cbm <- tibble(metric = names(cbm), value = as.numeric(unlist(cbm[1, ])))
+  } else {
+    names(cbm)[1:2] <- c("metric", "value")
+    cbm$value <- suppressWarnings(as.numeric(cbm$value))
+  }
+  pretty_val <- function(m, v) {
+    if (is.na(v)) return("")
+    if (grepl("fraction|ratio|fpr|indicator", m)) return(formatC(v, format = "f", digits = 3))
+    if (abs(v) >= 1000) return(formatC(round(v), format = "d", big.mark = ","))
+    formatC(v, format = "f", digits = 2)
+  }
+  cbm$value <- mapply(pretty_val, cbm$metric, cbm$value)
+  show_table(cbm, caption = "CellBender metrics")
+}
+show_fig(find_one(cb, paste0(samp, "_cellbender.pdf")),
+  paste("CellBender's own diagnostic page: training progress, cell probability against UMI",
+        "rank, and a PCA of the latent encoding. The middle panel is the one to read - it",
+        "shows where the model puts the boundary between cells and ambient droplets."))
+```
+
+# 3. Overlap between the methods
+
+```{r overlap-tables, results='asis'}
+show_table(read_if(find_one(cmp, "barcode_comparison_summary.csv")),
+           caption = "Barcode overlap summary")
+```
+
+```{r overlap-figs, results='asis'}
+notes <- list(
+  "venn_emptydrops_vs_cellbender_25k.pdf" = "emptyDrops against CellBender at the 25k setting.",
+  "venn_emptydrops_vs_cellbender_32k.pdf" = "emptyDrops against CellBender at 32k (expected + 15,000 droplets).",
+  "venn_emptydrops_vs_cellbender_32k30k.pdf" = "emptyDrops against CellBender at 32k with 30,000 extra droplets.",
+  "venn_cellbender_32k_vs_25k.pdf" = "The two CellBender settings against each other - how much the expected-cells choice actually moves the barcode set.",
+  "venn_emptydrops_cellbender_3way.pdf" = "Three-way overlap.",
+  "venn_emptydrops_cellbender_4way.pdf" = "Four-way overlap, adding the +30k arm.",
+  "barplot_category_breakdown.pdf" = "How many barcodes fall in each agreement category."
+)
+for (nm in names(notes)) show_fig(find_one(cmp, nm), notes[[nm]])
+```
+
+# 4. What the disagreed barcodes look like
+
+The overlap alone does not say which method is right. Step 06 takes every barcode category -
+called by both, by only one, by neither - and looks at its QC.
+
+```{r qc-tables, results='asis'}
+show_table(read_if(find_one(cmp, "emptydrops_cellbender_32k30k_qc_summary.csv")),
+           caption = "QC summary by barcode category")
+show_table(read_if(find_one(cmp, "emptydrops_cellbender_32k30k_qc_by_barcode_category.csv")),
+           caption = "QC by barcode category", n = 30)
+```
+
+```{r qc-figs, results='asis'}
+qnotes <- list(
+  "violin_qc_metrics_by_barcode_category_combined.pdf" = "All QC metrics by barcode category in one panel. The summary figure for this section.",
+  "violin_genes_by_barcode_category.pdf" = "Genes detected per barcode category.",
+  "violin_umis_by_barcode_category.pdf" = "UMIs per barcode category.",
+  "violin_percent_mt_by_barcode_category.pdf" = "Percent mitochondrial per category - this is what identifies the dead cells behind the run 2 problem.",
+  "violin_mt_counts_by_barcode_category.pdf" = "Mitochondrial counts per category."
+)
+for (nm in names(qnotes)) show_fig(find_one(cmp, nm), qnotes[[nm]])
+```
+
+# 5. In the pipeline
+
+Both tools run for every sample in the Nextflow pipeline, and their overlap is recorded per
+run rather than being re-derived by hand.
+
+```{r nf-overlap, results='asis'}
+rows <- list()
+for (r in list.dirs(nf, recursive = FALSE, full.names = TRUE)) {
+  f <- list.files(r, pattern = "emptydrops_cellbender_overlap\\.csv$", full.names = TRUE)
+  if (!length(f)) next
+  d <- read_if(f[1])
+  if (is.null(d)) next
+  d$run <- sub("_VH.*", "", basename(r))
+  rows[[length(rows) + 1]] <- d
+}
+if (length(rows)) show_table(bind_rows(rows), caption = "emptyDrops / CellBender overlap per pipeline run", n = 40)
+```
+
+# 6. What was run, in order
+
+| Step | Script | What it does |
+|---|---|---|
+| 01 | `01.emptydrops.R` | emptyDrops on the raw matrix, FDR <= 0.01. |
+| 02 | `02.cellbender_run.sh` | CellBender 0.3.0 in a container, expected + 15,000 droplets. |
+| 03 | `03.cellbender_run_30k_droplets.sh` | The +30,000 droplet arm of the sweep. |
+| 04 | `04.cellbender_qc.R` | Post-CellBender QC: knee plot, UMI before/after, percent background removed. |
+| 05 | `05.compare_emptydrops_cellbender.R` | Barcode overlap, Venns at 25k and 32k, category breakdown. |
+| 06 | `06.compare_emptydrops_cellbender_extended.R` | Adds the +30k arm, four-way Venn, and per-category QC. |
+| 07 | `07.cell_calling_report.Rmd` | This report. |
+
+Two earlier attempts at the CellBender run are not kept: `scripts/2a.cellbender.sh`
+(2026-06-19, before containerisation) and `scripts/2b.cellbender_docker.sh` (2026-06-23,
+containerised but before the fix). Step 02 supersedes both.
+
+Steps 05 and 06 are **both** kept, which is the exception to merging revisions into one step.
+They ran on different days and neither reproduces the other's output: step 05 wrote the 25k and
+32k Venns on 2026-06-24, step 06 wrote the 32k30k arm, the four-way Venn and the QC violins on
+2026-06-29.
+
+# 7. Data locations
+
+| What | Location |
+|---|---|
+| emptyDrops | `results/emptydrops/<run>/<sample>/` |
+| CellBender, +15k | `results/cellbender/<run>/<sample>/` |
+| CellBender, +30k | `results/cellbender/<run>/<sample>_e30000/` |
+| Comparison | `results/cellbender_comparison/<run>/<sample>/` |
+| Pipeline | `results_nf/<run>/02_emptydrops/`, `.../02_cellbender/`, and `<run>_emptydrops_cellbender_overlap.csv` |
+
+# 8. Tools
+
+| Tool | Version | Source |
+|---|---|---|
+| DropletUtils `emptyDrops` | see session below | FDR <= 0.01 |
+| CellBender | 0.3.0 | `containers/cellbender_0.3.0.sif`, and `cellbender_0.3.0_fixed.sif` |
+
+```{r session}
+sessionInfo()
+```
+
+# 9. Caveats
+
+1. **The full comparison exists for LK2 only.** CellBender was also run on LK1-resequenced, but
+   `cellbender_comparison/` has just the one run, so the Venns and category QC are LK2's.
+2. **The cell counts in the conclusions come from the meeting slides**, not from a saved
+   summary table - 24,334 for run 1 and 31,198 against Cell Ranger's 32,846 for run 2.
+3. **MT cutoffs are literature values**, listed for reference rather than derived here.
