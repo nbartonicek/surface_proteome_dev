@@ -1,0 +1,327 @@
+---
+title: "Biotin report"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  split_sample: "WEI21_26-17_NK"
+---
+
+<!--
+# ------------------------------------------------------------------
+# Biotin report - step 04 of 04
+#
+# Renders the lab archive report from the outputs of steps 01-03.
+# Render with ./render_report.sh, which also prints the HTML to PDF.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+theme_set(theme_bw(base_size = 12))
+options(scipen = 999)
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) {
+    cat(sprintf("\n_(could not rasterise `%s`: %s)_\n\n",
+                basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+}
+
+# slide-derived PNGs sit next to this file
+show_png <- function(rel, note = NULL, width_pct = 100) {
+  if (!file.exists(rel)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(rel)))
+  if (!is.null(note)) cat(note, "\n\n")
+  cat(sprintf('<img src="%s" style="width:%d%%"/>\n\n', rel, width_pct))
+}
+
+read_if <- function(path, ...) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+proj <- params$proj
+res  <- file.path(proj, "results")
+split_dir <- file.path(res, "hsc_mpp_biotin_split")
+mono_dir  <- file.path(res, "monocyte_biotin_split")
+cross_dir <- file.path(res, "seurat_demux_test")
+
+find_one <- function(root, name) {
+  if (!dir.exists(root)) return(NA_character_)
+  hits <- list.files(root, pattern = paste0("^", gsub("\\.", "\\\\.", name), "$"),
+                     recursive = TRUE, full.names = TRUE)
+  hits <- hits[!grepl("(^|/)\\._", hits)]
+  if (!length(hits)) NA_character_ else hits[1]
+}
+
+FIGS <- c(list.files(split_dir, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE),
+          list.files(mono_dir,  pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE),
+          list.files(cross_dir, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE))
+FIGS <- FIGS[!grepl("(^|/)\\._", FIGS) & file.exists(FIGS)]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+```
+
+**Samples:** biotin was compared across LK1 and LK2, and the high/low split was done on
+`` `r params$split_sample` `` from LK3.
+
+**Status:** the labelling works. The high-versus-low split is exploratory.
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `04.biotin_report.Rmd`, from the outputs of steps 01-03
+in this folder.
+
+Biotin is carried on the ADT panel as a readout of cell-surface glycosylation - "sugar-seq".
+It was added deliberately from the pilot run onward, so every CITE-seq experiment carries it
+alongside the antibody panel. This report covers how much biotin signal there is, how it is
+distributed, and what separates biotin-high from biotin-low cells.
+
+For full report, download `biotin_report.html` in the attachment and open in a browser.
+
+Code used - attached and in the github repository:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/6.Biotin_report>
+
+# Aim
+
+- does the biotin labelling work at all, and is it consistent between runs
+- how is biotin distributed across cell types
+- what distinguishes biotin-high from biotin-low cells within one population
+
+# Conclusions
+
+- **sugar-seq worked** - biotin signal is present and structured in every sample, not uniform
+  noise
+- **biotin is strongly cell-type dependent.** Monocytes carry markedly the most, with
+  pro-monocytes and cDC next; lymphoid populations and erythroid precursors carry the least.
+  The pattern holds in both normal donors and the AML sample
+- the signal is spatially coherent on the projected UMAP rather than scattered, which is what
+  rules out its being a technical artefact of the ADT panel
+- within HSC/MPP, splitting on biotin gives differences in RNA, in surface protein and in
+  cell-cycle phase, but this arm is exploratory - it has been run on one sample only
+- the same split in monocytes runs but on only 160 cells, and does not separate cycling from
+  non-cycling: both groups are ~90% G1
+- glycosylation has to be read against total surface load: step 02 computes CITE residuals
+  adjusted for that, because otherwise a cell with more surface protein of any kind looks
+  more glycosylated
+
+# 1. Does it work, and is it consistent
+
+Step 01 compares biotin ADT levels between the LK1 and LK2 runs. It was split out of the
+broader HTO/ADT comparison so it can be run without the demultiplexing steps.
+
+```{r cross-run, results='asis'}
+for (f in list.files(cross_dir, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE)) {
+  if (grepl("(^|/)\\._", f)) next
+  show_fig(f, "Biotin ADT compared across the LK1 and LK2 runs.")
+}
+```
+
+```{r sugar-seq, results='asis'}
+show_png("figures_from_slides/biotin_umap_per_sample.png",
+  paste("Biotin on the projected UMAP for the two normal donors and the AML sample. The",
+        "signal concentrates in the same region of the map in all three, which is the",
+        "evidence that the labelling worked - a technical artefact would not localise",
+        "consistently to one part of the manifold across independent samples."))
+```
+
+# 2. Distribution across cell types
+
+```{r by-celltype, results='asis'}
+show_png("figures_from_slides/biotin_by_celltype_violin.png",
+  paste("Biotin by broad cell type, split by sample. Monocytes are the clear outlier, with",
+        "pro-monocytes and cDC behind them; Pro-B, Pre-B and late erythroid sit lowest. The",
+        "ordering is the same in normal-02, normal-CD34-01 and WEI21_26-17_NK, so it tracks",
+        "cell identity rather than sample or disease state."))
+show_fig(find_one(split_dir, "3c_glyco_by_fine_celltype_violin.pdf"),
+  "The same picture at the fine cell type level, from step 02.")
+```
+
+# 3. Biotin-high versus biotin-low in HSC/MPP
+
+Step 02 takes the HSC/MPP compartment, splits it on CITE_DSB biotin, and asks what else
+differs. Everything in this section is one sample, `` `r params$split_sample` ``.
+
+```{r split-umaps, results='asis'}
+show_fig(find_one(split_dir, "5a_biotin_group_umap_projected.pdf"),
+  "The two groups on the projected UMAP.")
+show_fig(find_one(split_dir, "5b_biotin_value_umap_projected.pdf"),
+  "Biotin as a continuous value on the same layout - the split is a threshold on this.")
+```
+
+## RNA
+
+```{r split-rna, results='asis'}
+show_fig(find_one(split_dir, "2_pseudobulk_deseq2_volcano_biotin_high_vs_low.pdf"),
+  "Pseudobulk DESeq2, biotin-high against biotin-low.")
+show_fig(find_one(split_dir, "2_pseudobulk_edgeR_volcano_biotin_high_vs_low.pdf"),
+  "The same contrast under edgeR - shown alongside because with one sample the choice of method matters more than usual.")
+show_fig(find_one(split_dir, "1b_fgsea_hallmark_biotin_high_vs_low.pdf"),
+  "fgsea over MSigDB Hallmark, on the FindMarkers ranking.")
+show_fig(find_one(split_dir, "5d_findmarkers_top_genes_umap_projected.pdf"),
+  "Top FindMarkers genes on the projected UMAP.")
+show_fig(find_one(split_dir, "6a_findmarkers_top_genes_violin.pdf"),
+  "The same genes as violins by group.")
+```
+
+## Surface protein
+
+```{r split-protein, results='asis'}
+show_fig(find_one(split_dir, "5f_cite_dsb_top_proteins_umap_projected.pdf"),
+  "Top differential CITE_DSB proteins on the projected UMAP.")
+show_fig(find_one(split_dir, "6c_cite_dsb_top_proteins_violin.pdf"),
+  "The same proteins as violins by group.")
+show_fig(find_one(split_dir, "3b_glyco_residual_vs_protein_summary.pdf"),
+  paste("Glycosylation against total surface protein, as residuals. This is the control that",
+        "matters: without adjusting for surface load, any cell carrying more protein of any",
+        "kind would appear more glycosylated."))
+show_fig(find_one(split_dir, "3b_glyco_residual_vs_protein_top_scatter.pdf"),
+  "The individual proteins behind that summary.")
+```
+
+## Cell cycle
+
+```{r split-cc, results='asis'}
+show_fig(find_one(split_dir, "4_cell_cycle_phase_proportions_biotin_high_vs_low.pdf"),
+  "Cell-cycle phase proportions in the two groups, from Seurat CellCycleScoring.")
+show_fig(find_one(split_dir, "5c_cell_cycle_phase_umap_projected.pdf"),
+  "Phase on the projected UMAP, to check the split is not simply tracking proliferation.")
+```
+
+```{r split-tables, results='asis'}
+for (f in list.files(split_dir, pattern = "\\.csv$", full.names = TRUE)) {
+  if (grepl("(^|/)\\._", f)) next
+  show_table(read_if(f), caption = basename(f), n = 15)
+}
+```
+
+# 3b. The same split in monocytes
+
+Monocytes carry the most biotin, so they are the obvious population to split. This arm had
+never been run - the report script existed but nothing wrote the object it needs. Step 02a is
+step 02 with the population taken as an argument; run as
+`Rscript 02a.biotin_split_analysis_runnable.R "Monocyte"` it produced everything below.
+
+**The population is small.** 160 monocytes pass QC in this sample, splitting 80 high and 80
+low at the median. That is a tenth of the HSC/MPP compartment, and it is why the pseudobulk
+contrast here is thinner - treat the gene-level results as indicative only.
+
+```{r mono-figs, results='asis'}
+show_fig(find_one(mono_dir, "5a_biotin_group_umap_projected.pdf"),
+  "Biotin-high and biotin-low monocytes on the projected UMAP.")
+show_fig(find_one(mono_dir, "5b_biotin_value_umap_projected.pdf"),
+  "Biotin as a continuous value across the same cells.")
+show_fig(find_one(mono_dir, "2_pseudobulk_deseq2_volcano_biotin_high_vs_low.pdf"),
+  "Pseudobulk DESeq2, biotin-high against biotin-low monocytes.")
+show_fig(find_one(mono_dir, "1b_fgsea_hallmark_kegg_biotin_high_vs_low.pdf"),
+  "fgsea over Hallmark and KEGG on the FindMarkers ranking.")
+show_fig(find_one(mono_dir, "3b_glyco_by_fine_celltype_violin.pdf"),
+  "Glycosylation by fine cell type within the monocyte compartment.")
+show_fig(find_one(mono_dir, "3c_glyco_residual_vs_protein_summary.pdf"),
+  "Glycosylation against total surface load, as residuals.")
+show_fig(find_one(mono_dir, "4_cell_cycle_phase_proportions_biotin_high_vs_low.pdf"),
+  paste("Cell-cycle phase by group. Both are overwhelmingly G1 - 92.5% of biotin-high and",
+        "87.5% of biotin-low - so the split is not separating cycling from non-cycling cells."))
+show_fig(find_one(mono_dir, "6c_cite_dsb_top_proteins_violin.pdf"),
+  "Top differential CITE_DSB proteins between the groups.")
+```
+
+```{r mono-tables, results='asis'}
+for (nm in c("3b_fine_celltype_counts.csv",
+             "4_cell_cycle_phase_proportions_biotin_high_vs_low.csv",
+             "3_cite_dsb_wilcoxon_biotin_high_vs_low.csv")) {
+  show_table(read_if(find_one(mono_dir, nm)), caption = nm, n = 15)
+}
+```
+
+Two differences from the HSC/MPP outputs are worth noting rather than glossing. This run
+writes its UMAPs into a `umaps/` subdirectory while the HSC/MPP figures sit flat, and it
+produces no edgeR volcano where HSC/MPP has one - both because the HSC/MPP outputs came from
+an earlier version of the analysis script than the one frozen here as step 02.
+
+# 4. What was run, in order
+
+| Step | Script | What it does |
+|---|---|---|
+| 01 | `01.biotin_ADT_comparison.R` | Biotin ADT compared across the LK1 and LK2 runs. |
+| 02a | `02a.biotin_split_analysis_runnable.R` | Step 02 with the population as an argument, so any cell type can be split. Used to produce the monocyte arm. |
+| 02 | `02.hsc_mpp_biotin_split_analysis.R` | HSC/MPP split on biotin, then RNA DE, fgsea, pseudobulk, CITE DE, glycosylation by cell type, surface-load residuals, cell cycle. |
+| 03 | `03.biotin_split_report.Rmd` | The report over step 02's outputs. |
+| 04 | `04.biotin_report.Rmd` | This report. |
+
+Three scripts are not kept as separate steps. `scripts/27b.hsc_mpp_biotin_split_report.Rmd` is
+the longer first version of step 03 and is superseded by it.
+`scripts/27d.monocyte_biotin_split_report_short.Rmd` is step 03 pointed at monocytes,
+differing by three lines - the title and two paths. It could not run before because nothing
+wrote the object it reads; step 02a now does, so it is reproducible. `scripts/27.removeme_quick_biotin_test.R` is scratch, named by its author as
+disposable.
+
+# 5. Data locations
+
+| What | Location |
+|---|---|
+| Cross-run biotin comparison | `results/seurat_demux_test/LK1_vs_LK2_test_HTO_ADT_comparison/` |
+| HSC/MPP split | `results/hsc_mpp_biotin_split/` |
+| Monocyte split | `results/monocyte_biotin_split/`, figures under `umaps/` |
+| Rendered prior reports | `scripts/27b.hsc_mpp_biotin_split_report.html`, `scripts/27c.hsc_mpp_biotin_split_report_short.html` |
+| Slide figures | `figures_from_slides/`, from the 2026-07-22 progress deck |
+
+# 6. Tools
+
+| Tool | Version | Source |
+|---|---|---|
+| Seurat `FindMarkers` | see session below | Wilcoxon, single cell |
+| DESeq2 / edgeR | see session below | pseudobulk, fixed dispersion |
+| fgsea + msigdbr | see session below | Hallmark gene sets |
+| Seurat `CellCycleScoring` | see session below | phase assignment |
+
+```{r session}
+sessionInfo()
+```
+
+# 7. Caveats
+
+1. **The high/low split is one sample.** Everything in section 3 comes from
+   `` `r params$split_sample` `` alone, so the RNA and protein differences are not replicated.
+   Treat them as hypotheses.
+2. **The monocyte arm rests on 160 cells**, 80 high and 80 low. It has now been run, but that
+   is a tenth of the HSC/MPP compartment, so its gene-level results are weaker still.
+3. **Both DESeq2 and edgeR volcanoes are shown** rather than one, because with a single sample
+   the pseudobulk dispersion is fixed rather than estimated and the two methods can disagree.
+4. **The cross-run comparison is LK1 against LK2 only.** LK3, which supplied the split sample,
+   is not in it.
