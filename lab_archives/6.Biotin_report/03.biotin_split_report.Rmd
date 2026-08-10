@@ -1,0 +1,469 @@
+<!--
+# ------------------------------------------------------------------
+# Biotin report - step 03 of 4
+#
+# The report over step 02's outputs, restricted to sample WEI21_26-17_NK.
+#
+# Supersedes scripts/27b.hsc_mpp_biotin_split_report.Rmd (the longer first
+# version, 2026-07-22). scripts/27d.monocyte_biotin_split_report_short.Rmd is
+# this same file pointed at monocytes - it differs by three lines, the title
+# and two paths - but results/monocyte_biotin_split is empty, so that arm was
+# never run. Change RESULTS_DIR and HSC_RDS to produce it.
+#
+# Frozen for the lab archive 2026-08-04 from scripts/27c.hsc_mpp_biotin_split_report_short.Rmd (mtime 2026-07-27).
+# md5 of the original: ecc3d81b01dabfa45886a675689e6bbe
+# Body is unmodified - only this header was added.
+# ------------------------------------------------------------------
+-->
+
+---
+title: "HSC MPP: biotin-high vs biotin-low"
+subtitle: "RNA, pseudobulk, CITE-seq DSB, and cell-cycle comparison"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(Matrix)
+  library(tidyverse)
+  library(edgeR)
+  library(patchwork)
+  library(DT)
+})
+
+RESULTS_DIR   <- "../results/hsc_mpp_biotin_split"
+HSC_RDS       <- file.path(RESULTS_DIR, "hsc_mpp_biotin_split_seurat.rds")
+BIOTIN_MARKER <- "biotin"
+MIN_N_DE      <- 20
+BCV           <- 0.2
+FDR_CUTOFF    <- 0.05
+LOGFC_CUTOFF  <- 1
+
+if (!file.exists(HSC_RDS)) {
+  stop("Missing ", HSC_RDS, " - run 27a.hsc_mpp_biotin_split_analysis.R first.")
+}
+hsc <- readRDS(HSC_RDS)
+
+cells_high <- colnames(hsc)[hsc$biotin_group == "biotin_high"]
+cells_low  <- colnames(hsc)[hsc$biotin_group == "biotin_low"]
+
+safe_read_csv <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  suppressWarnings(readr::read_csv(path, show_col_types = FALSE))
+}
+
+make_pseudobulk_from_cells <- function(count_mat, cells) {
+  cells <- intersect(cells, colnames(count_mat))
+  if (length(cells) == 0) return(NULL)
+  Matrix::rowSums(count_mat[, cells, drop = FALSE])
+}
+
+run_deseq2_fixed_dispersion <- function(count_mat, group_vec, bcv = BCV) {
+  group_vec <- factor(group_vec, levels = c("reference", "test"))
+  keep <- edgeR::filterByExpr(edgeR::DGEList(counts = count_mat, group = group_vec))
+  count_mat <- round(count_mat[keep, , drop = FALSE])
+  coldata <- data.frame(group = group_vec, row.names = colnames(count_mat))
+  dds <- DESeq2::DESeqDataSetFromMatrix(countData = count_mat, colData = coldata, design = ~group)
+  dds <- DESeq2::estimateSizeFactors(dds)
+  DESeq2::dispersions(dds) <- rep(bcv^2, nrow(dds))
+  dds <- DESeq2::nbinomWaldTest(dds)
+  DESeq2::results(dds, contrast = c("group", "test", "reference")) %>%
+    as.data.frame() %>% rownames_to_column("gene") %>% as_tibble() %>%
+    transmute(gene, logFC = log2FoldChange, logCPM = log2(baseMean + 1), PValue = pvalue, FDR = padj) %>%
+    arrange(FDR)
+}
+
+HAS_MSIGDBR <- requireNamespace("msigdbr", quietly = TRUE)
+HAS_FGSEA   <- requireNamespace("fgsea", quietly = TRUE)
+
+residualize <- function(x, covariate) resid(lm(x ~ covariate))
+SURFACE_LOAD_MARKERS <- c("CD45", "HLA-ABC")
+GLYCO_ALWAYS_INCLUDE <- c("CD47", "CD33")
+
+reductions_to_plot <- c(
+  "RNA"          = "umap",
+  "WNN"          = "umap_wnn",
+  "BoneMarrowMap" = "umap_projected"
+)
+reductions_to_plot <- reductions_to_plot[reductions_to_plot %in% Seurat::Reductions(hsc)]
+```
+
+# Overview
+
+```{r overview}
+tibble(
+  Field = c("Cell type", "Total cells", "Biotin high", "Biotin low", "Biotin median (split point)"),
+  Value = c("HSC MPP", ncol(hsc), length(cells_high), length(cells_low),
+            round(median(hsc$biotin_value), 3))
+) %>%
+  DT::datatable(rownames = FALSE, options = list(dom = 't'))
+```
+
+# 1. FindMarkers (RNA, Wilcoxon)
+
+Single-cell RNA DE, biotin_high vs biotin_low.
+
+```{r findmarkers}
+findmarkers_res <- safe_read_csv(file.path(RESULTS_DIR, "1_findmarkers_biotin_high_vs_low.csv"))
+if (is.null(findmarkers_res)) {
+  message("CSV not found - recomputing.")
+  Seurat::DefaultAssay(hsc) <- "RNA"
+  Seurat::Idents(hsc) <- "biotin_group"
+  findmarkers_res <- Seurat::FindMarkers(
+    hsc, ident.1 = "biotin_high", ident.2 = "biotin_low",
+    assay = "RNA", test.use = "wilcox", min.pct = 0.1, logfc.threshold = 0.1
+  ) %>% rownames_to_column("gene") %>% as_tibble() %>% arrange(p_val_adj)
+}
+
+if (nrow(findmarkers_res) == 0) {
+  cat("_No genes tested._\n")
+} else {
+  DT::datatable(findmarkers_res %>% mutate(across(where(is.numeric), ~signif(.x, 3))),
+                rownames = FALSE, options = list(pageLength = 10))
+}
+```
+
+## 1b. Pathway analysis (fgsea, MSigDB Hallmark + KEGG)
+
+Ranked by signed significance (`sign(avg_log2FC) * -log10(p_val)`). Hallmark (broad, 50 curated sets) plus KEGG to check for glycolysis-related pathways.
+
+```{r pathway, fig.height=11}
+fgsea_res <- safe_read_csv(file.path(RESULTS_DIR, "1b_fgsea_hallmark_kegg_biotin_high_vs_low.csv"))
+if (is.null(fgsea_res) && !is.null(findmarkers_res) && nrow(findmarkers_res) > 0 && HAS_MSIGDBR && HAS_FGSEA) {
+  message("CSV not found - recomputing.")
+  gene_sets <- bind_rows(
+    msigdbr::msigdbr(species = "Homo sapiens", collection = "H") %>% mutate(source = "HALLMARK"),
+    msigdbr::msigdbr(species = "Homo sapiens", collection = "C2", subcollection = "CP:KEGG_LEGACY") %>%
+      mutate(source = "KEGG")
+  )
+  pathways <- split(gene_sets$gene_symbol, gene_sets$gs_name)
+  pathway_source <- gene_sets %>% distinct(gs_name, source)
+  ranks <- findmarkers_res %>%
+    mutate(rank_stat = sign(avg_log2FC) * -log10(pmax(p_val, .Machine$double.xmin))) %>%
+    distinct(gene, .keep_all = TRUE) %>% arrange(desc(rank_stat))
+  rank_vec <- setNames(ranks$rank_stat, ranks$gene)
+  fgsea_res <- fgsea::fgsea(pathways = pathways, stats = rank_vec, eps = 0) %>%
+    as_tibble() %>% left_join(pathway_source, by = c("pathway" = "gs_name")) %>% arrange(pval)
+}
+
+if (!HAS_MSIGDBR || !HAS_FGSEA) {
+  cat("_msigdbr and/or fgsea not installed - cannot show pathway analysis._\n")
+} else if (is.null(fgsea_res) || nrow(fgsea_res) == 0) {
+  cat("_No pathway result available._\n")
+} else {
+  DT::datatable(
+    fgsea_res %>% mutate(leadingEdge = purrr::map_chr(leadingEdge, ~paste(head(.x, 5), collapse = ", "))) %>%
+      mutate(across(where(is.numeric), ~signif(.x, 3))),
+    rownames = FALSE, options = list(pageLength = 10)
+  )
+  # Top N per source, not top N overall - Hallmark's larger effect sizes
+  # would otherwise crowd every KEGG pathway out of the plot.
+  top_path <- fgsea_res %>% group_by(source) %>% slice_min(padj, n = 10, with_ties = FALSE) %>%
+    ungroup() %>% mutate(pathway = str_remove(pathway, "^HALLMARK_|^KEGG_"))
+  print(
+    ggplot(top_path, aes(x = NES, y = reorder(pathway, NES), fill = padj < FDR_CUTOFF)) +
+      geom_col() +
+      facet_wrap(~ source, scales = "free_y", ncol = 1) +
+      scale_fill_manual(values = c(`TRUE` = "firebrick3", `FALSE` = "grey60"), guide = "none") +
+      labs(x = "NES (positive = higher in biotin_high)", y = "")
+  )
+}
+```
+
+# 2. Pseudobulk RNA DE (DESeq2)
+
+DESeq2 test, fixed dispersion (bcv = `r BCV`, i.e. dispersion = `r BCV^2`).
+
+```{r pseudobulk}
+pseudobulk_res <- safe_read_csv(file.path(RESULTS_DIR, "2_pseudobulk_deseq2_biotin_high_vs_low.csv"))
+if (is.null(pseudobulk_res) && length(cells_high) >= MIN_N_DE && length(cells_low) >= MIN_N_DE) {
+  message("CSV not found - recomputing.")
+  rna_counts <- Seurat::GetAssayData(hsc, assay = "RNA", layer = "counts")
+  pb <- cbind(reference = make_pseudobulk_from_cells(rna_counts, cells_low),
+              test      = make_pseudobulk_from_cells(rna_counts, cells_high))
+  pseudobulk_res <- run_deseq2_fixed_dispersion(pb, group_vec = c("reference", "test"), bcv = BCV)
+}
+
+if (is.null(pseudobulk_res) || nrow(pseudobulk_res) == 0) {
+  cat("_No genes tested (fewer than", MIN_N_DE, "cells in one group)._\n")
+} else {
+  DT::datatable(pseudobulk_res %>% mutate(across(where(is.numeric), ~signif(.x, 3))),
+                rownames = FALSE, options = list(pageLength = 10))
+
+  # FDR of exactly 0 floored to the smallest representable double before
+  # -log10() so it doesn't plot as Inf and blow out the y-axis scale.
+  volcano_df <- pseudobulk_res %>%
+    mutate(FDR_floor = pmax(FDR, .Machine$double.xmin),
+           sig = FDR < FDR_CUTOFF & abs(logFC) >= LOGFC_CUTOFF)
+  print(
+    ggplot(volcano_df, aes(x = logFC, y = -log10(FDR_floor), color = sig)) +
+      geom_point(alpha = 0.6, size = 1) +
+      scale_color_manual(values = c(`TRUE` = "firebrick3", `FALSE` = "grey70"), guide = "none") +
+      geom_vline(xintercept = c(-LOGFC_CUTOFF, LOGFC_CUTOFF), linetype = "dashed", color = "grey40") +
+      geom_hline(yintercept = -log10(FDR_CUTOFF), linetype = "dashed", color = "grey40") +
+      ggrepel::geom_text_repel(data = ~filter(.x, sig), aes(label = gene), size = 3, max.overlaps = 20) +
+      labs(x = "log2FC (high vs low)", y = expression(-log[10](FDR)))
+  )
+}
+```
+
+# 3. CITE-seq 
+
+## 3a. DSB differential binding
+Per-protein Wilcoxon test on DSB values, biotin_high vs biotin_low (`biotin` itself included only as a sanity check - it defines the grouping).
+
+```{r cite-de}
+cite_de_res <- safe_read_csv(file.path(RESULTS_DIR, "3_cite_dsb_wilcoxon_biotin_high_vs_low.csv"))
+if (is.null(cite_de_res) && length(cells_high) >= MIN_N_DE && length(cells_low) >= MIN_N_DE) {
+  message("CSV not found - recomputing.")
+  dsb_mat <- Seurat::GetAssayData(hsc, assay = "CITE_DSB", layer = "data")
+  cite_de_res <- purrr::map_dfr(rownames(dsb_mat), function(p) {
+    x <- dsb_mat[p, cells_high]; y <- dsb_mat[p, cells_low]
+    wt <- suppressWarnings(wilcox.test(x, y))
+    tibble(protein = p, n_high = length(x), n_low = length(y),
+           mean_high = mean(pmax(x, 0)), mean_low = mean(pmax(y, 0)),
+           mean_diff = mean(pmax(x, 0)) - mean(pmax(y, 0)), pvalue = wt$p.value)
+  }) %>% mutate(FDR = p.adjust(pvalue, method = "BH")) %>% arrange(FDR)
+}
+
+if (is.null(cite_de_res) || nrow(cite_de_res) == 0) {
+  cat("_No proteins tested (fewer than", MIN_N_DE, "cells in one group)._\n")
+} else {
+  DT::datatable(cite_de_res %>% mutate(across(where(is.numeric), ~signif(.x, 3))),
+                rownames = FALSE, options = list(pageLength = 10))
+}
+```
+
+## 3b. Glycosylation (biotin) by fine cell type
+
+Sanity check: does raw biotin actually look similar across HSC MPP's 3 fine substates (HSC / MPP-MkEry / MPP-MyLy)? 
+
+```{r glyco-by-finetype, fig.height=5}
+Seurat::DefaultAssay(hsc) <- "CITE_DSB"
+dsb_all <- Seurat::GetAssayData(hsc, assay = "CITE_DSB", layer = "data")
+
+if ("predicted_CellType" %in% colnames(hsc@meta.data)) {
+  finetype_counts <- hsc@meta.data %>% as_tibble() %>% count(predicted_CellType, name = "n_cells")
+  DT::datatable(finetype_counts, rownames = FALSE, options = list(dom = 't'))
+
+  finetype_df <- tibble(fine_type = hsc$predicted_CellType, biotin = dsb_all[BIOTIN_MARKER, ]) %>%
+    left_join(finetype_counts, by = c("fine_type" = "predicted_CellType")) %>%
+    mutate(fine_type_label = paste0(fine_type, " (n=", n_cells, ")"))
+
+  print(
+    ggplot(finetype_df, aes(x = fine_type_label, y = biotin)) +
+      geom_violin(fill = "grey85") +
+      geom_boxplot(width = 0.12, outlier.size = 0.5) +
+      labs(x = "", y = "Biotin (raw DSB)")
+  )
+
+  kw_raw <- kruskal.test(dsb_all[BIOTIN_MARKER, ] ~ factor(hsc$predicted_CellType))
+  cat("Kruskal-Wallis, raw biotin across fine cell types: p =", signif(kw_raw$p.value, 3), "\n")
+} else {
+  cat("_predicted_CellType (fine) not available._\n")
+}
+```
+
+## 3c. CITE-seq residuals vs glycosylation (biotin)
+
+The issue with the previous analysis is that most of the surface proteins are glycosylated. I could be just measuring "abundant" vs "nonabundant" CITE-seq antibodies when looking at glucose-high vs glucose-low cells.
+
+However, I could normalise for it. If l-PHA measures total glycosylation, then it should also be proportional to the total amount of proteins on the cell, and therefore total amount of CITE proteins. So then I could adjust for global glycosylation levels and ask if cells that have more of a specific CITE protein than expected also have more glycosylation than expected (residuals). 
+
+I've also normalised for cell size using CD45 proxy. 
+
+```{r glyco-residuals}
+glyco_protein_cor <- safe_read_csv(file.path(RESULTS_DIR, "3c_glyco_residual_vs_protein_residual.csv"))
+
+surface_load <- Matrix::colMeans(dsb_all[SURFACE_LOAD_MARKERS, , drop = FALSE])
+glyco_resid <- residualize(dsb_all[BIOTIN_MARKER, ], surface_load)
+
+if (is.null(glyco_protein_cor)) {
+  message("CSV not found - recomputing.")
+  other_proteins <- setdiff(rownames(dsb_all), c(BIOTIN_MARKER, SURFACE_LOAD_MARKERS))
+  glyco_protein_cor <- purrr::map_dfr(other_proteins, function(p) {
+    protein_resid <- residualize(dsb_all[p, ], surface_load)
+    fit <- lm(glyco_resid ~ protein_resid)
+    s <- summary(fit)
+    tibble(protein = p, coef = coef(fit)[["protein_resid"]],
+           se = s$coefficients["protein_resid", "Std. Error"],
+           pvalue = s$coefficients["protein_resid", "Pr(>|t|)"], r_squared = s$r.squared)
+  }) %>% mutate(FDR = p.adjust(pvalue, method = "BH")) %>% arrange(FDR)
+}
+
+DT::datatable(glyco_protein_cor %>% mutate(across(where(is.numeric), ~signif(.x, 3))),
+              rownames = FALSE, options = list(pageLength = 10))
+
+# Ranked by effect size (|coefficient|), not FDR - see 27a for why - with
+# CD47/CD33 always included regardless of rank.
+glyco_plot_df <- glyco_protein_cor %>%
+  mutate(sig = FDR < FDR_CUTOFF) %>%
+  arrange(desc(abs(coef)))
+glyco_plot_df <- bind_rows(
+  glyco_plot_df %>% slice_head(n = min(20, nrow(glyco_plot_df))),
+  glyco_plot_df %>% filter(protein %in% GLYCO_ALWAYS_INCLUDE)
+) %>% distinct(protein, .keep_all = TRUE)
+print(
+  ggplot(glyco_plot_df, aes(x = coef, y = reorder(protein, coef), color = sig)) +
+    geom_point(size = 2) +
+    geom_errorbarh(aes(xmin = coef - se, xmax = coef + se), height = 0.2) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+    scale_color_manual(values = c(`TRUE` = "firebrick3", `FALSE` = "grey50"), guide = "none") +
+    labs(x = "Coefficient (glyco_resid ~ protein_resid), +/- SE", y = "")
+)
+
+top_glyco_proteins <- glyco_protein_cor %>% arrange(desc(abs(coef))) %>% slice_head(n = 4) %>% pull(protein)
+top_glyco_proteins <- union(top_glyco_proteins, intersect(GLYCO_ALWAYS_INCLUDE, glyco_protein_cor$protein))
+scatter_df <- tibble(cell = colnames(hsc), glyco_resid = glyco_resid) %>%
+  bind_cols(map_dfc(top_glyco_proteins, function(p) tibble(!!p := residualize(dsb_all[p, ], surface_load)))) %>%
+  pivot_longer(-c(cell, glyco_resid), names_to = "protein", values_to = "protein_resid")
+print(
+  ggplot(scatter_df, aes(x = protein_resid, y = glyco_resid)) +
+    geom_point(alpha = 0.3, size = 0.5) +
+    geom_smooth(method = "lm", se = TRUE, color = "firebrick3") +
+    facet_wrap(~ protein, scales = "free_x") +
+    labs(x = "Protein residual (surface-load-adjusted)", y = "Glycosylation (biotin) residual")
+)
+
+#glyco_gene_cor <- safe_read_csv(file.path(RESULTS_DIR, #"3c_glyco_residual_vs_glycosyltransferase_RNA.csv"))
+#if (is.null(glyco_gene_cor)) {
+#  glyco_genes <- intersect(c("ST6GAL1", "FUT8", "MGAT5", "B4GALT1"), rownames(hsc[["RNA"]]))
+#  if (length(glyco_genes) > 0) {
+#    Seurat::DefaultAssay(hsc) <- "RNA"
+#    rna_expr <- Seurat::FetchData(hsc, vars = glyco_genes, layer = "data")
+#    glyco_gene_cor <- purrr::map_dfr(glyco_genes, function(g) {
+#      fit <- lm(glyco_resid ~ rna_expr[[g]])
+#      s <- summary(fit)
+#      tibble(gene = g, coef = coef(fit)[[2]], pvalue = s$coefficients[2, "Pr(>|t|)"])
+#    }) %>% mutate(FDR = p.adjust(pvalue, method = "BH")) %>% arrange(FDR)
+#  }
+#}
+#if (!is.null(glyco_gene_cor)) {
+#  cat("**Glycosyltransferase RNA vs glyco residual** (bonus, same scope/caveats):\n\n")
+#  DT::datatable(glyco_gene_cor %>% mutate(across(where(is.numeric), ~signif(.x, 3))),
+#                rownames = FALSE, options = list(dom = 't'))
+#}
+```
+
+# 4. Cell-cycle phase proportions
+
+```{r phase-table}
+phase_tab <- safe_read_csv(file.path(RESULTS_DIR, "4_cell_cycle_phase_proportions_biotin_high_vs_low.csv"))
+if (is.null(phase_tab)) {
+  phase_tab <- hsc@meta.data %>% as_tibble() %>% count(biotin_group, Phase) %>%
+    group_by(biotin_group) %>% mutate(pct = 100 * n / sum(n)) %>% ungroup()
+}
+DT::datatable(phase_tab %>% mutate(pct = round(pct, 1)), rownames = FALSE, options = list(dom = 't'))
+
+print(
+  ggplot(phase_tab, aes(x = biotin_group, y = pct, fill = Phase)) +
+    geom_col(position = "stack") +
+    labs(x = "", y = "% of cells", fill = "Phase")
+)
+
+phase_chisq <- tryCatch(suppressWarnings(chisq.test(table(hsc$biotin_group, hsc$Phase))),
+                        error = function(e) NULL)
+if (!is.null(phase_chisq)) {
+  cat("Chi-square test, phase distribution biotin high vs low: p =", signif(phase_chisq$p.value, 3), "\n")
+}
+```
+
+# 5. UMAPs
+
+Biotin split (categorical + continuous) and cell-cycle phase, on three embeddings: **RNA** and **RNA+Protein (WNN)** (both de novo, same as `22.patient_qc_report.Rmd`'s RNA/WNN UMAPs), and **Projected** (BoneMarrowMap reference). All restricted to HSC MPP cells. Top genes/antibodies from sections 1-3 are violins instead, in section 6 - a spatial embedding adds nothing for comparing two already-defined groups.
+
+```{r umap-top-features}
+top_fm_genes  <- if (exists("findmarkers_res") && nrow(findmarkers_res) > 0) {
+  findmarkers_res %>% slice_min(p_val_adj, n = 6, with_ties = FALSE) %>% pull(gene)
+} else character(0)
+
+top_cite <- if (!is.null(cite_de_res) && nrow(cite_de_res) > 0) {
+  cite_de_res %>% filter(protein != BIOTIN_MARKER) %>%
+    slice_min(FDR, n = 6, with_ties = FALSE) %>% pull(protein)
+} else character(0)
+```
+
+```{r umap-loop, results='asis', fig.height=5}
+for (i in seq_along(reductions_to_plot)) {
+  red_name  <- reductions_to_plot[i]
+  red_label <- names(reductions_to_plot)[i]
+
+  cat("\n## ", red_label, "\n\n")
+
+  Seurat::DefaultAssay(hsc) <- "CITE_DSB"
+
+  cat("**Biotin high/low and biotin value** - do the two groups occupy distinct regions?\n\n")
+  print(
+    Seurat::DimPlot(hsc, reduction = red_name, group.by = "biotin_group",
+                    cols = c(biotin_high = "firebrick3", biotin_low = "navy"),
+                    pt.size = 0.4, shuffle = TRUE, seed = 1) +
+      ggtitle(NULL)
+  )
+  print(
+    Seurat::FeaturePlot(hsc, features = "biotin_value", reduction = red_name,
+                        pt.size = 0.4, min.cutoff = "q05", max.cutoff = "q95") +
+      ggtitle(NULL)
+  )
+
+  cat("\n**Cell-cycle phase**, split by biotin group.\n\n")
+  print(
+    Seurat::DimPlot(hsc, reduction = red_name, group.by = "Phase",
+                    split.by = "biotin_group", pt.size = 0.4, shuffle = TRUE, seed = 1)
+  )
+}
+```
+
+# 6. Top genes/antibodies (violin)
+
+Distribution shift per gene/antibody, biotin_high vs biotin_low - a violin doesn't need a spatial embedding the way UMAPs do, so each is shown once, not per reduction. `biotin` excluded from the CITE panel - it trivially separates the groups by construction, not informative.
+
+```{r gene-violin, fig.height=4}
+if (length(top_fm_genes) > 0) {
+  cat("**Top FindMarkers genes.**\n\n")
+  Seurat::DefaultAssay(hsc) <- "RNA"
+  print(
+    Seurat::VlnPlot(hsc, features = top_fm_genes, assay = "RNA", layer = "data",
+                    group.by = "biotin_group", pt.size = 0) &
+      theme(legend.position = "none")
+  )
+} else {
+  cat("_No FindMarkers genes to plot._\n")
+}
+```
+
+```{r pseudobulk-violin, fig.height=4}
+if (length(top_pb_genes) > 0) {
+  cat("**", paste(top_pb_genes, collapse = ", "), "**\n\n")
+  Seurat::DefaultAssay(hsc) <- "RNA"
+  print(
+    Seurat::VlnPlot(hsc, features = top_pb_genes, assay = "RNA", layer = "data",
+                    group.by = "biotin_group", pt.size = 0) &
+      theme(legend.position = "none")
+  )
+} else {
+  cat("_No pseudobulk DE genes to plot._\n")
+}
+```
+
+```{r cite-violin, fig.height=4}
+if (length(top_cite) > 0) {
+  cat("**Top differential CITE-seq antibodies.**\n\n")
+  Seurat::DefaultAssay(hsc) <- "CITE_DSB"
+  print(
+    Seurat::VlnPlot(hsc, features = top_cite, assay = "CITE_DSB", layer = "data",
+                    group.by = "biotin_group", pt.size = 0) &
+      theme(legend.position = "none")
+  )
+} else {
+  cat("_No differential CITE_DSB proteins to plot._\n")
+}
+```

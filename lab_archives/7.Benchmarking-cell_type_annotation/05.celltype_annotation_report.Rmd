@@ -1,0 +1,536 @@
+---
+title: "Benchmarking: cell type annotation"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  pilot_run: "260423_VH01624_453_222HWMYNX"
+  run: "260528_VH01624_464_222K7VKNX"
+---
+
+<!--
+# ------------------------------------------------------------------
+# Cell type annotation benchmark - step 05 of 05
+#
+# Renders the lab archive report from the outputs of steps 01-04.
+# Render with ./render_report.sh, which also prints the HTML to PDF.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+theme_set(theme_bw(base_size = 12))
+options(scipen = 999)
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) {
+    cat(sprintf("\n_(could not rasterise `%s`: %s)_\n\n",
+                basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+}
+
+read_if <- function(path, ...) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+proj  <- params$proj
+res   <- file.path(proj, "results")
+run   <- params$run
+pilot <- params$pilot_run
+
+bench_dir <- file.path(res, "benchmarking", "celltype_annotation")
+pilot_dir <- file.path(res, "seurat_annotated", pilot)
+lk2_dir   <- file.path(res, "seurat_annotated", run)
+unmap_dir <- file.path(lk2_dir, "LK2-GEX_results_nf_unannotated_check")
+
+find_one <- function(root, name) {
+  if (is.null(root) || !dir.exists(root)) return(NA_character_)
+  hits <- list.files(root, pattern = paste0("^", gsub("\\.", "\\\\.", name), "$"),
+                     recursive = TRUE, full.names = TRUE)
+  hits <- hits[!grepl("(^|/)\\._", hits)]
+  if (!length(hits)) NA_character_ else hits[1]
+}
+
+all_pdfs <- function(root) {
+  if (!dir.exists(root)) return(character(0))
+  f <- list.files(root, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE)
+  f[!grepl("(^|/)\\._", f)]
+}
+
+FIGS <- unique(c(all_pdfs(bench_dir), all_pdfs(unmap_dir),
+                 all_pdfs(file.path(pilot_dir, "projectionFigures")),
+                 find_one(pilot_dir, "00a_BoneMarrowMap_reference_broad_celltype.pdf"),
+                 find_one(lk2_dir, "01_mapping_error_QC.pdf")))
+FIGS <- FIGS[!is.na(FIGS) & file.exists(FIGS)]
+FIGS <- FIGS[file.info(FIGS)$size > 0]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+
+# tables written by step 04
+t_qc_run   <- read_if(file.path(bench_dir, "01_mapping_QC_by_run.csv"))
+t_qc_samp  <- read_if(file.path(bench_dir, "02_mapping_QC_fail_by_sample.csv"))
+t_profile  <- read_if(file.path(bench_dir, "03_rejected_cell_profile.csv"))
+t_conf     <- read_if(file.path(bench_dir, "04_label_confidence.csv"))
+t_conf_ct  <- read_if(file.path(bench_dir, "05_label_confidence_by_celltype.csv"))
+t_relabel  <- read_if(file.path(bench_dir, "06_initial_vs_final_label.csv"))
+t_vocab    <- read_if(file.path(bench_dir, "07_fine_vs_broad_vocabulary.csv"))
+t_map      <- read_if(file.path(bench_dir, "09_fine_to_broad_label_map.csv"))
+t_thresh   <- read_if(file.path(bench_dir, "10_MAD_threshold_cost.csv"))
+
+# tables written by step 03
+u_qc       <- read_if(file.path(unmap_dir, "unknown_vs_annotated_qc_medians.csv"))
+u_patient  <- read_if(file.path(unmap_dir, "unknown_fraction_by_patient.csv"))
+u_hto      <- read_if(file.path(unmap_dir, "unknown_vs_annotated_HTO_classification.csv"))
+u_nn_nat   <- read_if(file.path(unmap_dir, "unknown_nearest_neighbor_identity_umap.csv"))
+u_nn_proj  <- read_if(file.path(unmap_dir, "unknown_nearest_neighbor_identity_umap_projected.csv"))
+u_cluster  <- read_if(file.path(unmap_dir, "unknown_cells_by_seurat_cluster.csv"))
+
+pct <- function(tbl, col, ...) {
+  if (is.null(tbl)) return("n/a")
+  v <- tbl %>% filter(...) %>% pull({{ col }})
+  if (!length(v)) "n/a" else as.character(v[1])
+}
+```
+
+**Runs:** pilot `` `r pilot` `` (HBDN206-MNpCT, HBDN392-AML-MDS, HBDN501-AML-KMT2A,
+MOLM13) and `` `r run` `` / LK2 (normal-01, HBDN376-TP53, HBDN498-TP53, APOP576-TP53).
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `05.celltype_annotation_report.Rmd`, from the outputs
+of steps 01-04 in this folder.
+
+Cells are annotated by projecting them into the Zeng et al. bone marrow reference with
+Symphony, rather than by clustering and scoring marker genes. The reference carries its own
+mapping-error QC, so a cell can come back with no label at all. This report covers how the
+projection behaves on our data, how many cells it refuses, what those cells are, and how much
+the labels can be trusted.
+
+For full report, download `celltype_annotation_report.html` in the attachment and open in a
+browser.
+
+Code used - attached and in the github repository:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/7.Benchmarking-cell_type_annotation>
+
+# Aim
+
+Establish reference-based annotation as the project's cell typing, and find out where it
+breaks:
+
+- how many cells does the reference refuse to label, and is that number stable between runs
+- what are the refused cells - real biology the reference does not contain, or bad cells
+- how much confidence sits behind the labels that do survive, and for which populations
+- fine versus broad labels: which one downstream analysis should key on
+
+# Conclusions
+
+- **BoneMarrowMap projection works and is what the project uses.** It annotates
+  `r pct(t_qc_run, percent, run == "LK1 pilot", mapping_error_QC == "Pass")`% of pilot cells
+  and `r pct(t_qc_run, percent, run == "LK2", mapping_error_QC == "Pass")`% of LK2 cells, at
+  the default `MAD_threshold` of 2.5
+- **the cells it refuses are bad cells, not unknown biology.** They are half the depth of the
+  cells that pass (`r pct(t_profile, nFeature_RNA, run == "LK2", mapping_error_QC == "Fail")`
+  vs `r pct(t_profile, nFeature_RNA, run == "LK2", mapping_error_QC == "Pass")` genes in LK2),
+  have higher mitochondrial and **four times lower ribosomal** content, and are enriched for
+  HTO-negative droplets. Forced to pick a neighbour they land on late erythroid and monocyte,
+  the two lowest-complexity populations
+- **the rejection rate is a readout of how far a sample sits from normal marrow.** In the pilot
+  the normal donor loses 4.8% and the leukaemias 10-11%; in LK2 APOP576-TP53 loses **30%**
+  against 3-4% for the rest. A high reject rate is a flag to look at the sample, not at the
+  reference
+- **`predict_CellTypes()` does not re-label anything.** The final label is identical to
+  `initial_CellType` for 100% of cells; the only thing it does is set the QC-failed cells to
+  NA. The NA cells and the `mapping_error_QC == "Fail"` cells are the same cells, 1:1
+- **label confidence tracks how continuous the biology is, not how well the projection ran.**
+  Terminal populations - Monocyte, cDC, pDC, Plasma Cell, Late Erythroid - come back at a
+  median vote fraction of 1.0. HSC MPP, LMPP, Early Lymphoid and Cycling Progenitor sit at
+  0.57-0.67, because the reference is resolving a gradient there rather than a boundary
+- **downstream grouping must key on `predicted_CellType_Broad`, not on `predicted_CellType`.**
+  The fine column has 53 levels and only 9 of them appear in the broad vocabulary the lineage
+  lists and the bespoke palette are written against. Keyed on the fine label,
+  `r pct(t_vocab, percent_cells_Other_if_keyed_on_fine, run == "LK1 pilot")`% of pilot cells
+  and `r pct(t_vocab, percent_cells_Other_if_keyed_on_fine, run == "LK2")`% of LK2 cells fall
+  into "Other"; keyed on the broad label, none do
+- **the Unknown cells sit with erythroid and pro-monocyte.** On
+  `02a_umap_native_unknown_highlighted.pdf` the majority fall in the erythroid / late
+  erythroid territory and in pro-monocyte, rather than scattering across the map
+- **the pipeline and the standalone scripts disagree on the threshold.**
+  `nextflow/bin/annotate.R` runs at `MAD_threshold = 4`; steps 01 and 02 ran at the
+  BoneMarrowMap default of 2.5. Going 2.5 -> 3 -> 4 roughly halves the rejection rate
+  (pilot 7.95 -> 6.36 -> 3.91%, LK2 5.48 -> 3.58 -> 1.75%) without changing which samples are
+  hardest to place. Given what section 3 shows the rejected cells to be, 2.5 is the better
+  setting - but 4 is what production currently runs, and that should be settled on purpose
+- there is **no confidence cutoff anywhere in the annotation**. `predict_CellTypes()` reports
+  the k = 30 vote share and never thresholds on it; the only gate is the mapping-error QC
+
+# 1. The reference
+
+The reference is BoneMarrowMap (Zeng et al.), a Symphony reference built on normal human bone
+marrow. It ships as a 345 MB reference object plus a 221 MB uwot model, both downloaded once
+into `annotation/`. Projection is `map_Query()` -> `calculate_MappingError()` ->
+`predict_CellTypes()` -> `predict_Pseudotime()`, with the demultiplexed sample as the batch
+variable so Symphony harmonises across donors within a pool rather than treating the GEM well
+as one batch.
+
+```{r reference, results='asis'}
+show_fig(find_one(pilot_dir, "00a_BoneMarrowMap_reference_broad_celltype.pdf"),
+  paste("The reference itself, coloured by broad cell type in the project palette. Query",
+        "cells are placed into this space; they do not move it. Stromal is the grey island -",
+        "it is in the reference, and it is the population that used to be dropped from every",
+        "figure by the palette bug described in section 9."), dpi = 90)
+```
+
+The reference returns two label columns, and the difference between them is the single thing
+most likely to cause trouble downstream:
+
+```{r vocab-map, results='asis'}
+if (!is.null(t_map)) {
+  ex <- t_map %>%
+    group_by(predicted_CellType_Broad) %>%
+    summarise(n_fine = n(),
+              fine_labels = paste(head(predicted_CellType, 4), collapse = ", "),
+              .groups = "drop") %>%
+    arrange(desc(n_fine))
+  show_table(head(ex, 10),
+             "How the fine labels roll up into the broad ones (10 broadest, LK1 + LK2 pooled)")
+}
+```
+
+# 2. How many cells the reference refuses
+
+`calculate_MappingError()` scores each cell on how well it sits in reference space and calls
+anything beyond `MAD_threshold` median absolute deviations a Fail. Failed cells keep their
+projected coordinates but lose their label.
+
+```{r qc-tables, results='asis'}
+show_table(t_qc_run, "Mapping-error QC, whole run (MAD_threshold = 2.5)")
+show_table(t_qc_samp, "Rejection rate per demultiplexed sample, worst first")
+```
+
+```{r qc-figs, results='asis'}
+show_fig(file.path(bench_dir, "01_mapping_QC_fail_by_sample.pdf"),
+  paste("Per-sample rejection. The normal donors sit at the bottom; the leukaemias and the",
+        "MOLM13 cell line sit at the top. APOP576-TP53 is the outlier at 30%."))
+show_fig(find_one(file.path(pilot_dir, "projectionFigures"), "01_mapping_error_QC.pdf"),
+  "The mapping error distribution and the threshold, pilot run.")
+show_fig(find_one(lk2_dir, "01_mapping_error_QC.pdf"),
+  "The same for LK2.")
+```
+
+The ordering is the point. A reference built on normal marrow places normal cells well and
+leukaemic cells less well, so the rejection rate reads as distance from normal rather than as
+a technical failure. It is worth checking whenever a new sample comes in.
+
+# 3. What the refused cells are
+
+```{r profile, results='asis'}
+show_table(t_profile, "Median QC covariates, cells that pass versus cells that fail")
+show_fig(file.path(bench_dir, "02_rejected_cell_profile.pdf"),
+  paste("The rejected cells are shallower, more mitochondrial and much less ribosomal than",
+        "the cells that pass. The ribosomal drop is the clearest separator - roughly a",
+        "four-fold difference in both runs."))
+```
+
+Step 03 pushes this further on the LK2 pipeline checkpoint, where the same projection is run
+at `MAD_threshold = 4` and the failed cells are followed individually.
+
+```{r unmapped-tables, results='asis'}
+show_table(u_qc, "Unknown versus annotated cells, median QC covariates (MAD_threshold = 4)")
+show_table(u_patient %>% dplyr::filter(is_unknown) %>% arrange(desc(percent)),
+           "Unknown fraction by donor")
+show_table(u_hto, "HTO classification of Unknown versus annotated cells")
+```
+
+Unknown cells are enriched in HTO-negative droplets
+(`r if (!is.null(u_hto)) round(u_hto$percent[u_hto$is_unknown & u_hto$HTO_classification.global == "Negative"], 1) else "n/a"`%
+against
+`r if (!is.null(u_hto)) round(u_hto$percent[!u_hto$is_unknown & u_hto$HTO_classification.global == "Negative"], 1) else "n/a"`%),
+which is the same population that fails hashing - low-content droplets that carry neither
+enough transcriptome to place nor enough hashtag to assign.
+
+```{r unmapped-figs, results='asis'}
+unotes <- list(
+  "01_unknown_fraction_by_cluster.pdf" = paste(
+    "Unknown cells are not spread evenly: one native cluster (11) is a fifth Unknown, the",
+    "rest are under 3%. They form a compartment, not a background."),
+  "02_umap_native_with_unknown.pdf" = "Native UMAP with Unknown as its own category.",
+  "02a_umap_native_unknown_highlighted.pdf" = paste(
+    "The same, with only the Unknown cells picked out - they sit together rather than",
+    "scattering across the manifold."),
+  "03_umap_projected_with_unknown.pdf" = "The reference-projected UMAP, same colouring.",
+  "03a_umap_projected_unknown_highlighted.pdf" = "Unknown cells on the projected UMAP.",
+  "04_unknown_nearest_neighbor_identity_umap.pdf" = paste(
+    "If each Unknown cell is forced to take the majority label of its 15 nearest annotated",
+    "neighbours in the object's own embedding, they come out mostly monocyte and",
+    "pro-monocyte."),
+  "04_unknown_nearest_neighbor_identity_umap_projected.pdf" = paste(
+    "The same vote in reference space instead swings to late erythroid. The two embeddings",
+    "disagree, which is the tell: these cells are being placed by what they lack rather than",
+    "by what they express, so their apparent identity depends on where you ask.")
+)
+
+for (f in sort(all_pdfs(unmap_dir))) {
+  show_fig(f, unotes[[basename(f)]])
+}
+```
+
+```{r nn-tables, results='asis'}
+show_table(u_nn_nat, "Nearest annotated neighbour, native embedding", n = 8)
+show_table(u_nn_proj, "Nearest annotated neighbour, projected embedding", n = 8)
+```
+
+# 4. How much the surviving labels can be trusted
+
+**There is only one cutoff in the whole annotation, and it is the mapping-error one.**
+`predict_CellTypes()` calls `knnPredict_Seurat()` with **k = 30**: each query cell is given
+the majority label of its 30 nearest reference neighbours in harmonised PCA space.
+`predicted_CellType_prob` is the fraction of those 30 that voted for the winning label - so
+it is a vote share, not a posterior probability, and every value it can take is a multiple of
+1/30. In LK2 it takes 25 distinct values, the lowest being 0.2 (6 of 30).
+
+`predict_CellTypes()` then does exactly one thing with that number: nothing. It never
+thresholds on it. The only cell it sets to NA is the cell whose `mapping_error_QC` is Fail.
+So a label assigned on a 7-to-30 plurality is stored with the same standing as one assigned
+unanimously, and it is up to whoever reads the object to decide whether to trust it. Nothing
+downstream in this project currently filters on it either.
+
+That makes the distribution below worth reading properly rather than skimming: it is the only
+description of how firm each label is.
+
+```{r conf, results='asis'}
+show_table(t_conf, "Label confidence over cells that pass QC")
+show_fig(file.path(bench_dir, "03_label_confidence.pdf"),
+  paste("One bar is one neighbour changing its vote. The dashed lines are reading aids, not",
+        "thresholds the tool applies: 1/30 is the floor, 0.5 is where a label stops being a",
+        "true majority and becomes a plurality, 1.0 is unanimous. 34% of LK2 labels are",
+        "unanimous; 8% sit below the majority line and are the ones to be careful with."))
+show_fig(file.path(bench_dir, "04_label_confidence_by_celltype.pdf"),
+  paste("Median confidence by broad cell type. The low end is HSC MPP, LMPP, Early Lymphoid,",
+        "Cycling Progenitor and Early GMP; the high end is Monocyte, cDC, pDC, Plasma Cell",
+        "and Late Erythroid."))
+```
+
+This is not a quality gradient. The populations with low confidence are the ones that are
+genuinely continuous - a cell part way along the HSC-to-LMPP axis should not get a unanimous
+vote, and the fact that it does not is the reference behaving correctly. It does mean that
+any analysis that treats HSC MPP as a discrete population is working with a soft boundary,
+which is worth remembering for the biotin split and for the surfaceome comparisons.
+
+```{r conf-type-table, results='asis'}
+if (!is.null(t_conf_ct)) {
+  show_table(t_conf_ct %>% arrange(median_prob) %>% head(10),
+             "Ten least confident broad cell types (>= 20 cells)")
+  show_table(t_conf_ct %>% arrange(desc(median_prob)) %>% head(10),
+             "Ten most confident")
+}
+```
+
+# 5. What predict_CellTypes() actually does
+
+```{r relabel, results='asis'}
+show_table(t_relabel, "initial_CellType versus predicted_CellType")
+```
+
+`initial_CellType` is never NA, `predicted_CellType` is NA for exactly the QC-failed cells,
+and wherever both are present they are identical for 100% of cells in both runs. So the
+second call is a gate, not a second opinion: it does not revise labels, it withholds them.
+That matters for anyone reading the object - `initial_CellType` is not a draft that got
+improved, it is the same answer without the QC applied.
+
+# 6. Fine versus broad labels
+
+```{r vocab, results='asis'}
+show_table(t_vocab, "Fine and broad label vocabularies")
+```
+
+This is exactly what happened to the pilot's `10_lineage_composition_by_sampleID.csv` and
+`12_specific_celltype_composition_by_sampleID.csv` - the latter has an all-NA cell type
+column on disk. Step 01 here is keyed on the broad column, and step 02 (the LK2 version that
+became the pipeline process) already was.
+
+# 7. The mapping-error threshold
+
+2.5 is the BoneMarrowMap default, and it is what the standalone scripts in steps 01 and 02
+ran. **The pipeline does not use it.** `nextflow/bin/annotate.R` runs at `MAD_threshold = 4`;
+only `nextflow/bin/lib_early_qc_annotation.R` still has 2.5. So the figures in
+`results/seurat_annotated/` are at 2.5 and anything coming out of `results_nf/` is at 4, and
+the two are not interchangeable.
+
+The score itself does not depend on the threshold - `calculate_MappingError()` stores
+`mapping_error_score` per cell and then calls Pass/Fail on
+`score < median(score) + MAD_threshold * mad(score)`, with median and MAD taken over the whole
+object. So the sweep below is computed directly from the stored score rather than by
+re-projecting. Recomputing the 2.5 call reproduces the stored `mapping_error_QC` for 100% of
+cells in both runs, which is what makes the other two columns trustworthy.
+
+```{r thresh, results='asis'}
+t_sweep_run <- read_if(file.path(bench_dir, "12_MAD_threshold_sweep_by_run.csv"))
+t_sweep_samp <- read_if(file.path(bench_dir, "11_MAD_threshold_sweep_by_sample.csv"))
+
+show_table(t_sweep_run, "Rejection rate by run, at MAD_threshold 2.5, 3 and 4")
+
+if (!is.null(t_sweep_samp)) {
+  wide <- t_sweep_samp %>%
+    dplyr::select(run, sample, MAD_threshold, percent_rejected) %>%
+    pivot_wider(names_from = MAD_threshold, values_from = percent_rejected,
+                names_prefix = "MAD ") %>%
+    arrange(desc(`MAD 2.5`))
+  show_table(wide, "Rejection rate per sample, worst first (percent of that sample's cells)")
+}
+
+show_fig(file.path(bench_dir, "06_MAD_threshold_sweep.pdf"),
+  paste("Every sample moves in the same direction and keeps its rank - the threshold changes",
+        "how much is cut, not which samples are hardest to place. APOP576-TP53 still loses",
+        "11.6% at 4, more than any other sample loses at 2.5."))
+```
+
+Going from 2.5 to 4 roughly halves the rejection rate - 7.95% to 3.91% in the pilot, 5.48% to
+1.75% in LK2 - and 3 sits between them. Since section 3 shows the rejected cells are shallow,
+ribosome-poor and enriched for HTO negatives, the cells recovered by relaxing the threshold
+are mostly ones there is no good reason to keep. That argues for 2.5 rather than the 4 the
+pipeline currently runs, but it has not been changed, so the discrepancy stands and is worth
+resolving deliberately rather than by drift.
+
+# 8. Projection output
+
+The projected UMAP for both runs, coloured by `predicted_CellType_Broad` in the project
+palette. The versions in `results/seurat_annotated/` are coloured by the 53-level fine label
+in ggplot defaults and exist for one run at a time, which is why step 04a redraws them.
+
+```{r projection, results='asis'}
+show_fig(file.path(bench_dir, "07_projected_umap_broad_both_runs.pdf"),
+  paste("LK1 pilot and LK2 side by side. Same reference space, same palette, so the",
+        "compositional difference between the two runs can be read directly off the map."))
+```
+
+# 9. What was run
+
+```{r steps, results='asis'}
+steps <- tibble::tribble(
+  ~Step, ~Script, ~What,
+  "00", "00.celltype_palette.R",
+  "The bespoke broad-cell-type palette, lineage vocabulary and the check_palette() guard, defined once and sourced by steps 01-03. Run directly, it redraws the reference UMAPs.",
+  "01", "01.annotate_LK1_pilot.R",
+  "BoneMarrowMap projection of the LK1 pilot, MAD 2.5.",
+  "02", "02.annotate_LK2.R",
+  "The same projection on LK2. This is the version that became the pipeline's 08_annotate process.",
+  "03", "03.check_unannotated_cells.R",
+  "Re-projects the LK2 pipeline checkpoint at MAD 4 and characterises the cells that still fail - QC covariates, donor, HTO class, native cluster, nearest annotated neighbour.",
+  "04", "04.annotation_benchmark_summary.R",
+  "Scores the annotation from the metadata tables alone: reject rates, rejected-cell profile, label confidence, initial-versus-final label, fine-versus-broad vocabulary, the MAD threshold sweep.",
+  "04a", "04a.projected_umaps.R",
+  "Redraws the projected UMAP for both runs in the broad palette. Separate from step 04 because it is the only step that loads the ~450 MB projected objects.",
+  "05", "05.celltype_annotation_report.Rmd",
+  "This report."
+)
+show_table(steps)
+```
+
+Steps 01 and 02 are collated from `backup/10.annotate.R`, `backup/10a.annotate.R`,
+`backup/10b.annotate_DSB.R` and `8.annotate.R`. `10.annotate.R` is superseded - none of its
+output names survive in `results/`. `10a` and `10b` are the same script run twice with
+different ADT assays, which is now the step 01 argument. Three fixes went in on the way:
+
+- `10a` had a `marker_map` / `plot_df` block sitting above the code that creates the objects
+  it references, so it could only ever have been run interactively out of order. Removed.
+- `10a.heatmap_cell_type_all.pdf` is 0 bytes on disk because scaling a zero-variance row
+  gives NaN and `pheatmap` will not draw it. Fixed in both steps.
+- the numbat export loops at the tails of `10a` and `8.annotate.R` belong to the CNV work,
+  not to annotation. Dropped from both.
+- every script carried its own copy of the palette, and the copies had drifted. All of them
+  listed `GMP` - a label the reference never emits, since it splits that population into
+  Early GMP and Late GMP - and none had an entry for `Stromal`, which the reference does
+  emit. Because the plots do `factor(CellType_Broad, levels = names(celltype_cols))`, every
+  stromal cell was being set to NA and dropped at the plotting step. That is why stromal
+  cells looked unannotated: they were annotated, they were being discarded when drawn. The
+  palette now lives in step 00 with `Stromal` in grey, and `check_palette()` raises a warning
+  instead of silently dropping anything it does not recognise.
+
+# 10. Data locations
+
+```{r locations, results='asis'}
+locs <- tibble::tribble(
+  ~What, ~Where,
+  "BoneMarrowMap reference + uwot model", "annotation/BoneMarrowMap_SymphonyReference.rds, annotation/BoneMarrowMap_uwot_model.uwot",
+  "Pilot input (CITE/DSB object)", sprintf("results/cite_qc_then_dsb/%s/LK1-GEX/seurat_demux_ADT_CLR_DSB_QC.rds", pilot),
+  "LK2 input (CITE/DSB object)", sprintf("results/cite_seq_dsb/%s/LK2-GEX/seurat_demux_ADT_CLR_DSB_QC.rds", run),
+  "LK2 pipeline checkpoint (step 03 input)", sprintf("results_nf/%s/rds/07_cite_qc/LK2-GEX/rds/seurat_demux_ADT_CLR_DSB_QC.rds", run),
+  "Pilot annotation outputs", sprintf("results/seurat_annotated/%s", pilot),
+  "LK2 annotation outputs", sprintf("results/seurat_annotated/%s", run),
+  "Unannotated-cell investigation", sprintf("results/seurat_annotated/%s/LK2-GEX_results_nf_unannotated_check", run),
+  "Benchmark tables and figures (step 04)", "results/benchmarking/celltype_annotation"
+)
+show_table(locs)
+```
+
+```{r tools, results='asis'}
+tools <- tibble::tribble(
+  ~Tool, ~Version, ~Use,
+  "BoneMarrowMap", "0.2.0", "Zeng et al. normal bone marrow Symphony reference and helpers",
+  "symphony", "0.1.2", "reference mapping",
+  "uwot", "0.2.4", "UMAP projection into reference coordinates",
+  "Seurat", "5.4.0", "object handling, DimPlot/FeaturePlot",
+  "class", "7.3.23", "kNN vote for the Unknown-cell identity assignment",
+  "pheatmap", "1.0.13", "composition heatmaps"
+)
+show_table(tools, "Tools")
+```
+
+# 11. Caveats
+
+- steps 01 and 02 are the collated, cleaned versions of the scripts that produced the
+  original annotation, and were not re-executed - the projections they wrote in May and June
+  are what everything here is computed from. Steps 00, 03, 04 and 04a were run fresh, which
+  is what `Analysis finished` reflects. Step 03 reused its saved annotated object rather than
+  re-projecting, so only its figures are new, not its numbers
+- the pilot and LK2 numbers come from two different input objects and two different upstream
+  CITE QC runs, so the difference in reject rate between runs is not a controlled comparison.
+  The per-sample ordering within each run is, and so is the threshold sweep, which moves the
+  same cells against the same score
+- step 03 runs on the pipeline checkpoint at `MAD_threshold = 4`, not on the step 02 object at
+  2.5. Its 1.35% Unknown and step 02's 5.48% Fail are therefore both correct and not directly
+  comparable - the sweep in section 7 is the like-for-like version, since it recomputes both
+  thresholds against the same cells
+- the ADT/CITE marker projections that steps 01 and 02 also write are not shown here. The
+  step 01 `ADT_ASSAY` argument still selects between `ADT_CLR` and `CITE_DSB` for them, and
+  both were run; the figures are on disk under `projectionFigures/`
+- APOP576-TP53's 30% reject rate has not been chased down beyond noting it. It is the sample
+  to look at first if that number matters
+- pseudotime is inherited from the reference, not computed on our cells, so it should be read
+  as "where in the normal trajectory does this cell project", not as a trajectory of the
+  leukaemia
