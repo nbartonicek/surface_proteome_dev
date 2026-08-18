@@ -1,0 +1,429 @@
+---
+title: "Nextflow workflow"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+---
+
+<!--
+# ------------------------------------------------------------------
+# Nextflow workflow - step 03 of 03
+#
+# Renders the lab archive report from the outputs of steps 01-02.
+# Render with ./render_report.sh.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+theme_set(theme_bw(base_size = 12))
+options(scipen = 999)
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) {
+    cat(sprintf("\n_(could not rasterise `%s`: %s)_\n\n",
+                basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+}
+
+read_if <- function(path, ...) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+# Pandoc reads $...$ as inline math, so a published path like
+# ${run}/08_annotate turns the underscore into a subscript. Wrapping such cells
+# in backticks makes them inline code, which pandoc leaves alone. Applied to any
+# column whose values contain $ or _, plus anything named in `code`.
+as_code <- function(x) {
+  x <- as.character(x)
+  ifelse(is.na(x) | x == "", x, paste0("`", x, "`"))
+}
+
+needs_code <- function(x) {
+  x <- as.character(x)
+  any(grepl("[$_]", x[!is.na(x)]))
+}
+
+show_table <- function(df, caption = NULL, n = Inf, code = NULL) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  df <- as.data.frame(df)
+  for (nm in names(df)) {
+    if (nm %in% code || (is.null(code) && needs_code(df[[nm]]))) {
+      df[[nm]] <- as_code(df[[nm]])
+    }
+  }
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+proj      <- params$proj
+bench_dir <- file.path(proj, "results", "benchmarking", "nextflow_workflow")
+
+all_pdfs <- function(root) {
+  if (!dir.exists(root)) return(character(0))
+  f <- list.files(root, pattern = "\\.pdf$", recursive = TRUE, full.names = TRUE)
+  f[!grepl("(^|/)\\._", f)]
+}
+
+FIGS <- all_pdfs(bench_dir)
+FIGS <- FIGS[file.exists(FIGS) & file.info(FIGS)$size > 0]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+
+t_proc   <- read_if(file.path(bench_dir, "01_pipeline_processes.csv"))
+t_order  <- read_if(file.path(bench_dir, "02_workflow_order.csv"))
+t_params <- read_if(file.path(bench_dir, "03_pipeline_params.csv"))
+t_res    <- read_if(file.path(bench_dir, "04_process_resources.csv"))
+t_sheet  <- read_if(file.path(bench_dir, "05_samplesheet.csv"))
+t_obs    <- read_if(file.path(bench_dir, "06_pipeline_observations.csv"))
+t_wired  <- read_if(file.path(bench_dir, "07_process_wired_into_workflow.csv"))
+t_stages <- read_if(file.path(bench_dir, "09_stage_presence_by_run.csv"))
+t_funnel <- read_if(file.path(bench_dir, "10_cell_count_funnel.csv"))
+t_lost   <- read_if(file.path(bench_dir, "11_cells_lost_by_step.csv"))
+t_ovl    <- read_if(file.path(bench_dir, "12_emptydrops_cellbender_overlap.csv"))
+t_cmp    <- read_if(file.path(bench_dir, "13_params_vs_benchmarks.csv"))
+t_runmap <- read_if(file.path(bench_dir, "14_run_identity.csv"))
+t_rtproc <- read_if(file.path(bench_dir, "16_runtime_by_process_by_run.csv"))
+t_rtwide <- read_if(file.path(bench_dir, "17_runtime_by_process_wide.csv"))
+t_rtrun  <- read_if(file.path(bench_dir, "18_runtime_by_run.csv"))
+t_elapsed<- read_if(file.path(bench_dir, "20_elapsed_vs_work.csv"))
+```
+
+**Runs processed:** `260522_VH01624_461_222JLJVNX` (LK1 re-sequenced),
+`260528_VH01624_464_222K7VKNX` (LK2) and `260717_VH01624_477_222KG22NX` (LK3).
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `03.nextflow_workflow_report.Rmd`, from the outputs
+of steps 01-02 in this folder.
+
+Everything the benchmark reports settled - cell calling, demultiplexing, ADT normalisation,
+annotation, CNV calling - is implemented once, as a Nextflow pipeline, and run over every
+sequencing run from raw FASTQ to a final annotated object. This report describes what the
+pipeline is, what it produced, and where its settings agree or disagree with the benchmarks
+that were supposed to determine them.
+
+For full report, download `nextflow_workflow_report.html` in the attachment and open in a
+browser.
+
+The pipeline lives in a **different repository** from the lab archives:
+<https://github.com/nbartonicek/surface_proteome>
+
+Code used for this report - attached and in:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/9.Nextflow_workflow>
+
+# Aim
+
+Document the production pipeline as it actually stands, and check it against the benchmarks:
+
+- what does the workflow do, in what order, with what resources
+- does every process actually run
+- do the parameters match what the benchmark reports concluded
+- what did it produce for each run, and where do cells get lost
+
+# Conclusions
+
+- **the pipeline runs end to end on all three runs.** Every one of the 13 published stages
+  is present for LK1 re-sequenced, LK2 and LK3, through to a final merged object and a
+  per-run QC report
+- **most settings match their benchmarks** - emptyDrops FDR 0.01 and minimum 100 UMI, HTO
+  `positive.quantile` 0.99, cellSNP min count 20 and MAF 0.10, genotype demultiplexing with
+  cellSNP-lite plus vireo, DSB for ADT, CellBender 0.3.0, `refdata-gex-GRCh38-2024-A`
+- **the annotation threshold does not match.** `bin/annotate.R` runs BoneMarrowMap at
+  `MAD_threshold = 4`; `bin/lib_early_qc_annotation.R` and every standalone script use the
+  default 2.5. Report 07 shows this roughly halves the rejection rate, so `results_nf/` and
+  `results/seurat_annotated/` are **not** directly comparable
+- **`params.cell_caller` is a dead parameter that says the wrong thing.** It is set to
+  `"emptydrops"` and is never read anywhere. The workflow assigns CellBender barcodes as the
+  primary cell calls unconditionally. Anyone changing that parameter expecting an effect
+  would get none
+- **`DOROTHEA_VIPER` never runs.** The module and its R script exist, but the process is the
+  only one of the 20 that is neither included nor called in `main.nf`
+- **demultiplexing is where the cells go.** It is the largest single loss in every run - LK2
+  drops from 33,228 scDblFinder singlets to 25,690 demultiplexed cells, about 23%. Cell
+  calling and mapping QC are minor by comparison
+- **the two cell callers disagree more than expected, and not evenly.** Jaccard overlap is
+  91.9% for LK1 but only **74.5%** for LK2, and CellBender always calls more barcodes -
+  8,895 CellBender-only against 1,349 emptyDrops-only in LK2. Since CellBender is the primary
+  caller and emptyDrops feeds the DSB background, the two are both in use and their
+  disagreement propagates
+- **the pipeline runs the re-sequenced LK1, not the pilot.** `260522` is in the samplesheet;
+  `260423` is not. Reports 01, 07 and 08 analysed the pilot. The two trees look
+  interchangeable and are not
+- **donor names differ between the pipeline and the standalone work** - `HBDN206-MN-pCT`
+  against `HBDN206-MNpCT`, `HBDN392-MDS` against `HBDN392-AML-MDS`, `HBDN501-KMT2A` against
+  `HBDN501-AML-KMT2A`. Joins between the two output trees will not match on donor
+
+# 1. What the pipeline is
+
+A single `main.nf` with `r if (!is.null(t_proc)) nrow(t_proc) else "18"` modules, run on SLURM
+through `run_nextflow.sh`, publishing to `results_nf/<run>/`. Each process is a thin Nextflow
+wrapper around an R script in `bin/`, so the analysis code is readable on its own and the
+`.nf` file carries only the plumbing.
+
+```{r sheet, results='asis'}
+show_table(t_sheet, "conf/samples.csv - the only thing that has to change to add a run")
+```
+
+The samplesheet carries the run, the sample, the donor count and the semicolon-joined donor
+IDs. LK3's `donor_ids` field - `normal_CD34-01;;;normal-02` - shows two conventions at once:
+the empty slots are HTO positions that were not used, and `WEI21_26-17_NK` is an *unhashed*
+donor carried in its own column, assigned downstream by whichever vireo genetic cluster does
+not match an HTO singlet population.
+
+```{r order, results='asis'}
+show_table(t_order, "Workflow order, from the section comments in main.nf")
+```
+
+```{r procs, results='asis'}
+if (!is.null(t_proc)) {
+  show_table(t_proc %>% dplyr::select(module, process, publishes),
+             "Modules, the processes they define, and where they publish")
+}
+```
+
+# 2. Does every process run
+
+```{r wired, results='asis'}
+if (!is.null(t_wired)) {
+  show_table(t_wired %>% arrange(included_in_main, process),
+             "Every process declared in modules/, and whether main.nf includes it")
+}
+```
+
+`DOROTHEA_VIPER` is declared in `modules/dorothea_viper.nf` with a matching
+`bin/dorothea_viper.R`, and is neither included nor invoked. It is dead code rather than a
+disabled option - there is no parameter that would switch it on.
+
+# 3. Parameters against the benchmarks
+
+This is the part that matters. Each benchmark report exists to settle one setting; the
+pipeline is where those decisions are supposed to end up.
+
+```{r cmp, results='asis'}
+show_table(t_cmp, "Pipeline setting against the benchmark that determined it", code = "pipeline_value")
+```
+
+Two rows need attention.
+
+**`MAD_threshold`.** `bin/annotate.R` - the script the live `ANNOTATE` process runs - uses 4.
+`bin/lib_early_qc_annotation.R` uses 2.5, and so did every standalone annotation script.
+Report 07 measured what this costs: rejection drops from 7.95% to 3.91% in the pilot and from
+5.48% to 1.75% in LK2. The cells recovered are shallow, ribosome-poor and enriched for
+HTO negatives, which argues for 2.5. Whichever is preferred, the two code paths should agree
+with each other, and right now they do not.
+
+**`params.cell_caller`.** Declared as `"emptydrops"` in `nextflow.config` and never read. The
+workflow does `cell_barcodes = CELLBENDER.out.cellbender_barcodes` with no conditional. The
+behaviour is right - report 04 concluded CellBender for cell calls with emptyDrops retained
+for the DSB background, which is exactly what the DAG does - but the parameter documents the
+opposite and would mislead anyone reading the config to find out what the pipeline does.
+
+```{r params, results='asis'}
+show_table(t_params, "All pipeline parameters as configured")
+```
+
+# 4. Resources
+
+```{r res, results='asis'}
+show_table(t_res, "Per-process resource requests")
+```
+
+Defaults are 2 CPUs, 8 GB and 2 hours; `errorStrategy` is `finish`, so a failing process lets
+already-running work complete rather than killing the run, but does not retry.
+
+# 5. What it produced
+
+```{r stages, results='asis'}
+show_table(t_stages, "Published stage directories, entries per run")
+```
+
+All three runs completed all 13 stages.
+
+```{r funnel, results='asis'}
+show_table(t_funnel %>% dplyr::select(run, sample, step, n_cells),
+           "Cells surviving each stage")
+show_fig(file.path(bench_dir, "01_cell_count_funnel.pdf"),
+  paste("EmptyDrops and CellBender sit at the same point in the funnel - they are",
+        "alternatives, not sequential filters, which is why the line rises between them."))
+```
+
+```{r lost, results='asis'}
+show_table(t_lost %>% dplyr::select(run, sample, step, n_cells_lost),
+           "Cells lost at each transition")
+```
+
+Demultiplexing is consistently the largest loss. In LK2 it removes 7,538 cells, against 348
+lost to mapping QC at the other end. That is the expected shape - pooled donors mean every
+ambiguous or doublet droplet is discarded - but it is worth knowing that the dominant
+attrition in the pipeline is the pooling design, not any QC threshold.
+
+# 6. The two cell callers
+
+```{r overlap, results='asis'}
+show_table(t_ovl %>% dplyr::select(run, sample, n_emptydrops, n_cellbender, n_common,
+                                   n_emptydrops_only, n_cellbender_only, pct_jaccard),
+           "Barcode overlap between the two callers")
+show_fig(file.path(bench_dir, "02_cell_caller_overlap.pdf"))
+```
+
+Both callers run on every sample, and both outputs are used - CellBender's barcodes are the
+cell calls, emptyDrops' barcodes define the background droplets DSB needs. So the overlap is
+not academic: the two sets disagree by 25% in LK2, and each disagreement region feeds a
+different part of the downstream analysis.
+
+# 7. Runtime
+
+Nextflow writes no trace file here - only `report` and `dag` are enabled in the config - but
+its HTML execution report embeds the full per-task trace as JSON, which is where these
+numbers come from. They are Nextflow's own accounting, not a re-measurement.
+
+```{r rt-run, results='asis'}
+show_table(t_rtrun, "Per run. wall_total_if_serial is the sum of task runtimes, not elapsed time")
+show_table(t_elapsed, "Elapsed wall clock against work done. concurrency = work / elapsed")
+```
+
+`CACHED` is a success, not a failure - it means Nextflow resumed that task from a previous
+run's work directory instead of re-executing it. LK1 was executed in full; LK2 and LK3 are
+almost entirely resumed. **No task failed in any run.**
+
+```{r timeline, results='asis'}
+show_fig(file.path(bench_dir, "06_pipeline_timeline.pdf"),
+  paste("One bar per task, positioned from the first submit of its run. Overlapping bars ran",
+        "concurrently, so panel width is elapsed time while the total bar length is work",
+        "done. The long serial spine at the start - Cell Ranger, then CellBender and",
+        "cellSNP - is what sets the floor on how fast a run can finish."), dpi = 110)
+```
+
+```{r rt-proc, results='asis'}
+if (!is.null(t_rtproc)) {
+  show_table(
+    t_rtproc %>%
+      dplyr::select(run, process, n_tasks, cached, wall_total, wall_longest,
+                    cpu_hours, peak_rss_gb),
+    "Per process per run, longest first"
+  )
+}
+show_table(t_rtwide, "Wall-clock time per process, runs side by side")
+```
+
+```{r rt-figs, results='asis'}
+show_fig(file.path(bench_dir, "03_runtime_by_process.pdf"))
+show_fig(file.path(bench_dir, "04_cpu_hours_by_process.pdf"),
+  "Allocated CPU hours - realtime times allocated cpus, so what the process costs the cluster rather than what it uses.")
+show_fig(file.path(bench_dir, "05_peak_memory_by_process.pdf"),
+  paste("Peak RSS per task against the memory each process asks for. CITE_SEQ_COUNT_ADT is",
+        "the one to look at."))
+```
+
+Three things stand out. **CopyKAT is the most expensive step** - 10h19m of wall clock across
+its four per-donor tasks in LK2, more than Cell Ranger. **The pipeline is only 1.5-2.2x
+concurrent**, because the early stages are a serial chain on one sample before the per-donor
+fan-out begins. And **CITE_SEQ_COUNT_ADT peaks at 311 GB RSS**, which is worth checking
+against what its process directive actually requests.
+
+# 8. Which run is which
+
+```{r runmap, results='asis'}
+show_table(t_runmap, "Run identity", code = "run")
+```
+
+# 9. Observations
+
+Recorded rather than fixed - the pipeline is a separate repository and nothing in this report
+modifies it.
+
+```{r obs, results='asis'}
+show_table(t_obs, "Things worth deciding about", code = "where")
+```
+
+# 10. What was run
+
+```{r steps, results='asis'}
+steps <- tibble::tribble(
+  ~Step, ~Script, ~What,
+  "01", "01.pipeline_inventory.R",
+  "Parses modules/, main.nf and nextflow.config into process, parameter and resource tables, and checks which processes are actually wired into the workflow.",
+  "02a", "02a.pipeline_runtimes.R",
+  "Parses the per-task trace out of Nextflow's HTML execution reports and summarises runtime, CPU hours, peak memory and the schedule.",
+  "02", "02.pipeline_outputs_and_params.R",
+  "Inventories the published output tree per run, reads the cell-count funnel and cell-caller overlap, and compares every parameter against the benchmark that determined it.",
+  "03", "03.nextflow_workflow_report.Rmd",
+  "This report."
+)
+show_table(steps, code = "Script")
+```
+
+Unlike reports 01-08 there are no analysis scripts of mine to collate here - the pipeline
+itself is the artefact. These two steps read it and write down what they find; neither writes
+anything into `nextflow/`.
+
+# 11. Data locations
+
+```{r locations, results='asis'}
+locs <- tibble::tribble(
+  ~What, ~Where,
+  "Pipeline", "nextflow/ - separate git repository, nbartonicek/surface_proteome",
+  "Entry point", "nextflow/main.nf",
+  "Process definitions", "nextflow/modules/*.nf",
+  "Analysis code", "nextflow/bin/*.R and qc_report.Rmd",
+  "Configuration", "nextflow/nextflow.config",
+  "Samplesheet", "nextflow/conf/samples.csv",
+  "Launcher", "nextflow/run_nextflow.sh",
+  "Published output", "results_nf/<run>/",
+  "Nextflow's own DAG and execution reports", "results_nf/pipeline_dag.html, results_nf/execution_report_<run>.html",
+  "Tables and figures for this report", "results/benchmarking/nextflow_workflow"
+)
+show_table(locs)
+```
+
+# 12. Caveats
+
+- this report describes the pipeline as it stands on the `reporting` branch of the
+  `surface_proteome` repository at the time of writing. It is a live repository and can move
+  underneath this description
+- the parameter-versus-benchmark table is a judgement about intent, not a measurement. It
+  records what each benchmark report concluded and what the pipeline does; where they agree,
+  that agreement was not re-verified by re-running anything
+- the cell-count funnel and cell-caller overlap tables are the pipeline's own QC output, read
+  as published. They were not recomputed from the objects
+- `results_nf/` and `results/seurat_annotated/` are different analyses of overlapping data,
+  at different annotation thresholds, on partly different runs, with different donor naming.
+  Numbers should not be carried between them without checking all three
+- runtime numbers come from Nextflow's execution reports. For a CACHED task the timestamps
+  are those of the run that actually executed it, not of the resumed invocation, so the
+  timelines for LK2 and LK3 show the original schedule
+- CPU hours are allocated, not consumed - a process given 16 cores that uses one still bills
+  16
+- nothing in this report modifies the pipeline. The observations in section 8 are for you to
+  decide about
