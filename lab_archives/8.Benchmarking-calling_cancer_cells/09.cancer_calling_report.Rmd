@@ -1,0 +1,427 @@
+---
+title: "Benchmarking: calling cancer cells"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+params:
+  proj: "/Volumes/bioinf_scratch/users/nbartonicek/projects/amgen"
+  pilot_run: "260423_VH01624_453_222HWMYNX"
+  run: "260528_VH01624_464_222K7VKNX"
+---
+
+<!--
+# ------------------------------------------------------------------
+# Calling cancer cells - step 09 of 09
+#
+# Renders the lab archive report from the outputs of steps 01-08.
+# Render with ./render_report.sh, which also prints the HTML to PDF.
+# ------------------------------------------------------------------
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9)
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(stringr)
+  library(purrr); library(knitr); library(ggplot2); library(scales)
+})
+theme_set(theme_bw(base_size = 12))
+options(scipen = 999)
+
+HAS_PDFTOOLS <- requireNamespace("pdftools", quietly = TRUE)
+
+embed_pdf_figure <- function(pdf_path, dpi = 120, page = 1, width_pct = 100) {
+  if (is.na(pdf_path) || !file.exists(pdf_path)) return(invisible(NULL))
+  if (!HAS_PDFTOOLS) return(invisible(NULL))
+  png_path <- tempfile(fileext = ".png")
+  ok <- tryCatch({
+    pdftools::pdf_convert(pdf_path, format = "png", pages = page, dpi = dpi,
+                          filenames = png_path, verbose = FALSE); TRUE
+  }, error = function(e) {
+    cat(sprintf("\n_(could not rasterise `%s`: %s)_\n\n",
+                basename(pdf_path), conditionMessage(e)))
+    FALSE
+  })
+  if (ok) cat(sprintf('\n<img src="%s" style="width:%d%%"/>\n\n', png_path, width_pct))
+}
+
+show_fig <- function(path, note = NULL, width_pct = 100, dpi = 120) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  embed_pdf_figure(path, dpi = dpi, width_pct = width_pct)
+}
+
+show_img <- function(path, note = NULL, width_pct = 100) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(invisible(NULL))
+  cat(sprintf("\n**`%s`**\n\n", basename(path)))
+  if (!is.null(note)) cat(note, "\n\n")
+  b64 <- base64enc::dataURI(file = path, mime = "image/jpeg")
+  cat(sprintf('<img src="%s" style="width:%d%%"/>\n\n', b64, width_pct))
+}
+
+read_if <- function(path, ...) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) return(NULL)
+  out <- try(suppressMessages(readr::read_delim(path, show_col_types = FALSE, ...)), silent = TRUE)
+  if (inherits(out, "try-error")) NULL else out
+}
+
+show_table <- function(df, caption = NULL, n = Inf) {
+  if (is.null(df) || nrow(df) == 0) return(invisible(NULL))
+  if (is.finite(n)) df <- head(df, n)
+  cat("\n"); print(kable(df, caption = caption)); cat("\n\n")
+}
+
+proj  <- params$proj
+res   <- file.path(proj, "results")
+run   <- params$run
+pilot <- params$pilot_run
+
+bench_dir   <- file.path(res, "benchmarking", "cancer_calling")
+copykat_dir <- file.path(res, "seurat_annotated", pilot, "copykat_annotated")
+numbat_lk1  <- file.path(res, "seurat_annotated", pilot, "numbat")
+numbat_lk2  <- file.path(res, "seurat_annotated", run, "numbat")
+lr_fig      <- file.path(res, "longread_numbat", "comparison_figures")
+lr_tbl      <- file.path(res, "longread_numbat", "comparison_tables")
+normal_dir  <- file.path(proj, "results_nf", run, "09c_numbat_run",
+                         "numbat_interpretable_cnv_qc")
+
+find_one <- function(root, name) {
+  if (is.null(root) || !dir.exists(root)) return(NA_character_)
+  hits <- list.files(root, pattern = paste0("^", gsub("\\.", "\\\\.", name), "$"),
+                     recursive = TRUE, full.names = TRUE)
+  hits <- hits[!grepl("(^|/)\\._", hits)]
+  if (!length(hits)) NA_character_ else hits[1]
+}
+
+all_pdfs <- function(root, pattern = "\\.pdf$") {
+  if (!dir.exists(root)) return(character(0))
+  f <- list.files(root, pattern = pattern, recursive = TRUE, full.names = TRUE)
+  f[!grepl("(^|/)\\._", f)]
+}
+
+FIGS <- unique(c(all_pdfs(bench_dir), all_pdfs(normal_dir),
+                 all_pdfs(copykat_dir), all_pdfs(lr_fig)))
+FIGS <- FIGS[!is.na(FIGS) & file.exists(FIGS)]
+FIGS <- FIGS[file.info(FIGS)$size > 0]
+analysis_finished <- if (length(FIGS)) max(as.Date(file.info(FIGS)$mtime)) else NA
+
+t_ck      <- read_if(file.path(bench_dir, "01_copykat_calls_by_donor.csv"))
+t_nb      <- read_if(file.path(bench_dir, "02_numbat_compartment_by_donor.csv"))
+t_conf    <- read_if(file.path(bench_dir, "03_copykat_vs_numbat_confusion.csv"))
+t_agree   <- read_if(file.path(bench_dir, "04_copykat_vs_numbat_agreement.csv"))
+t_agree_ct<- read_if(file.path(bench_dir, "05_copykat_vs_numbat_agreement_by_celltype.csv"))
+t_lr      <- read_if(file.path(bench_dir, "06_shortread_vs_longread.csv"))
+
+t_norm_cut <- read_if(file.path(normal_dir, "normal_empirical_cutoffs.csv"))
+t_norm_fr  <- read_if(file.path(normal_dir, "tumour_like_fraction_by_metric.csv"))
+```
+
+**Runs:** pilot `` `r pilot` `` (HBDN206-MNpCT, HBDN392-AML-MDS, HBDN501-AML-KMT2A,
+MOLM13) and `` `r run` `` / LK2 (normal-01, HBDN376-TP53, HBDN498-TP53, APOP576-TP53).
+
+**Analysis finished:** `r if (is.na(analysis_finished)) "n/a" else format(analysis_finished)` -
+the most recent of the `r length(FIGS)` figures shown below.
+
+**Report generated:** `r Sys.Date()` by `09.cancer_calling_report.Rmd`, from the outputs of
+steps 01-08 in this folder.
+
+Which cells in a patient sample are the leukaemia. There is no ground truth, so the question
+is approached by running two independent CNV callers on the same cells and asking where they
+agree, running one of them on a healthy donor to measure the false-positive floor, and
+running the same caller on short-read and long-read sequencing of the same cells to see how
+much the call depends on the data rather than the method.
+
+For full report, download `cancer_calling_report.html` in the attachment and open in a
+browser.
+
+Code used - attached and in the github repository:
+<https://github.com/nbartonicek/surface_proteome_dev/tree/main/lab_archives/8.Benchmarking-calling_cancer_cells>
+
+# Aim
+
+Establish how malignant cells are identified, and how far the calls can be trusted:
+
+- do two independent CNV callers agree on the same cells, and where do they not
+- what does a caller do on a donor with no cancer - the false positive floor
+- does the call depend on the sequencing platform
+- which populations are hardest to call
+
+# Conclusions
+
+- **CopyKAT and Numbat agree on the great majority of cells** -
+  `r if (!is.null(t_agree)) paste0(paste(sprintf("%s%%", t_agree$percent_agree), collapse = " and "), " on ", paste(t_agree$donor, collapse = " and ")) else "n/a"`
+- **but that headline agreement is inflated and should not be quoted on its own.** It is
+  carried by HSC MPP, which is 4,002 of the 4,409 shared cells in HBDN206-MNpCT and agrees
+  99.8%. Agreement in the lymphoid compartment is far worse - Naive T 25%, B 51%, CD4 Memory
+  T 63% - and those are exactly the populations handed to CopyKAT as its confident-normal
+  anchor. CopyKAT calls them diploid partly by construction, so the two callers are not
+  independent there
+- **where they disagree, it is one-directional: Numbat calls malignant, CopyKAT calls
+  normal** (152 against 9 cells in HBDN206-MNpCT, 73 against 2 in HBDN501-AML-KMT2A). Numbat
+  is the more liberal caller on this data
+- **Numbat is specific.** On the healthy donor its CNV evidence sits at a median
+  `cnv_z_abs_mean` of 15.3 against 123-315 in the three AML donors, and only **1.0%** of
+  normal-01 cells exceed the 99th percentile of the normal distribution against **97-100%**
+  of AML cells. Calling cancer where there is none is not the failure mode to worry about
+- **the platform changes the answer more than the caller does.** Same cells, same Numbat,
+  short read against long read: compartment concordance is
+  `r if (!is.null(t_lr)) paste(sprintf("%.1f%%", t_lr$compartment_concordance), collapse = ", ") else "n/a"`,
+  but per-cell pCNV correlation is only
+  `r if (!is.null(t_lr)) paste(sprintf("%.2f", t_lr$pcnv_correlation), collapse = ", ") else "n/a"`.
+  So the two platforms sort cells into the same bin reasonably often while disagreeing almost
+  entirely about how much CNV evidence each cell carries
+- **that disagreement is also one-directional** - short read calls tumour where long read
+  calls normal (339, 566 and 365 cells) and almost never the reverse (0, 99, 2). Long read
+  is the more conservative platform, which is expected given its much lower depth per cell
+- **Numbat did not complete for two of the four pilot donors.** HBDN392-AML-MDS and MOLM13
+  are 100% `not_called`. Any pilot statement about Numbat rests on two donors
+- **MOLM13 is never actually called by either method.** It is an AML cell line with no normal
+  cells to anchor a baseline, so it is assigned aneuploid directly. It is flagged in its own
+  column so it can be excluded from concordance statistics, and it should be
+
+# 1. The two callers
+
+CopyKAT and Numbat both infer copy number from single-cell RNA, but they use different
+evidence and need different inputs.
+
+CopyKAT works from expression alone. It needs a set of cells it can trust to be diploid, and
+it is given the lymphoid populations - Naive T, CD4 Memory T, CD8 Memory T, NK and B - on the
+grounds that they are not part of the myeloid compartment the leukaemia arises from. It is
+run **per donor**, not per GEM well: the well is a pool of four donors and CopyKAT estimates
+its baseline from the cells it is handed, so pooling would let one donor's aneuploidy define
+another donor's normal.
+
+Numbat adds allele evidence. It needs the Cell Ranger BAM, a phased SNP panel and a
+population reference panel, so it runs in two cluster stages inside the Numbat container -
+pileup and phasing first (step 02), then the CNV and clone inference (step 03).
+
+```{r callers, results='asis'}
+show_table(t_ck, "CopyKAT calls per donor, LK1 pilot")
+show_fig(file.path(bench_dir, "01_copykat_aneuploid_by_donor.pdf"))
+```
+
+```{r numbat-calls, results='asis'}
+if (!is.null(t_nb)) {
+  show_table(t_nb %>% dplyr::select(-any_of("run")),
+             "Numbat compartment per donor")
+}
+```
+
+Two donors come back entirely `not_called`. HBDN392-AML-MDS and MOLM13 did not produce usable
+Numbat output, so every Numbat statement in this report is based on HBDN206-MNpCT and
+HBDN501-AML-KMT2A only.
+
+# 2. Do the two callers agree
+
+```{r agree, results='asis'}
+show_table(t_agree, "Cell-level agreement, on cells with a call from both")
+show_fig(file.path(bench_dir, "02_copykat_vs_numbat_confusion.pdf"),
+  paste("The off-diagonal is asymmetric. Numbat calling malignant where CopyKAT calls normal",
+        "is much more common than the reverse."))
+```
+
+The headline number is high, and on its own it is misleading. Breaking agreement down by
+cell type shows where it actually comes from:
+
+```{r agree-ct, results='asis'}
+show_table(t_agree_ct, "Agreement by broad cell type (populations with at least 20 cells)")
+```
+
+HSC MPP is 4,002 of the 4,409 shared cells and agrees 99.8%, which is what drags the overall
+figure to 96%. The lymphoid populations - the ones the two callers actually have room to
+disagree about - sit between 25% and 80%.
+
+This is worth being blunt about: **the lymphoid cells are CopyKAT's normal reference.**
+CopyKAT was told they are diploid, so its calling them diploid is not independent evidence.
+Where Numbat calls some of those same cells malignant, the disagreement cannot be settled by
+this comparison - it is a question about whether the normal anchor was correctly chosen, and
+that is what step 05's clone inspection is for.
+
+# 3. What the callers do on a donor with no cancer
+
+normal-01 in LK2 is a healthy donor. Anything called tumour there is a false positive, so it
+gives the floor that the AML numbers should be read against. Step 06 compares it against the
+three AML donors on the same per-cell CNV metrics.
+
+```{r normal, results='asis'}
+if (!is.null(t_norm_fr)) {
+  show_table(
+    t_norm_fr %>%
+      filter(metric %in% c("cnv_z_abs_mean", "cnv_z_burden_100")) %>%
+      mutate(across(where(is.numeric), ~ round(.x, 3))),
+    "Tumour-like fraction against the normal donor's own distribution"
+  )
+}
+show_fig(find_one(normal_dir, "02_fraction_above_normal_cnv_cutoffs.pdf"),
+  paste("Fraction of each donor's cells exceeding the normal donor's cutoffs. The three AML",
+        "donors sit at the top, normal-01 at the floor."))
+show_fig(find_one(normal_dir, "01_interpretable_per_cell_cnv_metrics.pdf"),
+  "The per-cell metrics themselves, normal against AML.")
+show_fig(find_one(normal_dir, "03_sample_level_evidence.pdf"),
+  "Sample-level CNV evidence.")
+```
+
+The separation is clean. Median `cnv_z_abs_mean` is 15.3 in normal-01 against 123, 133 and
+315 in the AML donors, and 1.0% of normal cells exceed the normal 99th percentile against
+97-100% of AML cells. Numbat is not manufacturing cancer out of a healthy marrow.
+
+# 4. Short read against long read
+
+The same LK2 cells were sequenced on both platforms and Numbat was run on each. Same donors,
+same barcodes, same caller - so any disagreement is the data, not the method.
+
+```{r lr, results='asis'}
+show_table(t_lr, "Short read against long read, per donor")
+show_fig(file.path(bench_dir, "03_shortread_vs_longread_tumor_fraction.pdf"),
+  "Long read calls fewer cells tumour in every donor.")
+show_fig(file.path(bench_dir, "04_shortread_vs_longread_direction.pdf"),
+  paste("The disagreement is almost entirely one-directional. Cells that short read calls",
+        "tumour and long read calls normal outnumber the reverse by orders of magnitude in",
+        "two of the three donors."))
+```
+
+Two numbers should be read together here. Compartment concordance looks respectable at 89-94%
+for two of the donors, but the per-cell pCNV correlation is 0.12-0.41. The platforms put
+cells in the same bin without agreeing on the evidence behind it, which means the compartment
+call is robust in a way the per-cell CNV probability is not. Anything downstream that uses
+pCNV as a continuous quantity should not be trusted across platforms.
+
+APOP576-TP53 is the worst on both counts - 63.6% concordance and 0.12 correlation. It is also
+the sample that loses 30% of its cells to BoneMarrowMap mapping-error QC in the annotation
+benchmark. The same sample being the outlier in two unrelated analyses points at the sample
+rather than at either method.
+
+```{r lr-per-donor, results='asis'}
+lrf <- all_pdfs(lr_fig)
+for (f in sort(lrf[grepl("summary_", basename(lrf))])) show_fig(f)
+```
+
+# 5. Per-donor detail
+
+```{r per-donor, results='asis'}
+for (f in sort(all_pdfs(lr_fig))) {
+  if (grepl("summary_", basename(f))) next
+  show_fig(f)
+}
+```
+
+```{r copykat-figs, results='asis'}
+ckf <- all_pdfs(copykat_dir)
+for (f in sort(ckf)) show_fig(f)
+```
+
+# 6. What was run
+
+```{r steps, results='asis'}
+steps <- tibble::tribble(
+  ~Step, ~Script, ~What,
+  "01", "01.copykat_per_donor.R",
+  "CopyKAT per donor, lymphoid cells as the confident-normal anchor. MOLM13 assigned rather than called.",
+  "02", "02.numbat_pileup_and_phase.sh",
+  "Numbat stage 1 on the cluster: pileup and phasing from the Cell Ranger BAM, in the container.",
+  "03", "03.numbat_run.sh + 03a.numbat_run.R",
+  "Numbat stage 2: CNV and clone inference, one array task per donor.",
+  "04", "04.numbat_to_seurat.R",
+  "Pulls the per-donor Numbat calls onto the annotated object and plots compartment and clone against the BoneMarrowMap annotation.",
+  "05", "05.compare_numbat_copykat.R",
+  "Numbat against CopyKAT on one donor, with the clone inspection. Donor and doublet handling are arguments.",
+  "06", "06.numbat_normal_donor_control.R",
+  "The specificity control: what Numbat reports on the healthy donor, against the three AML donors.",
+  "07", "07.compare_shortread_longread_numbat.R",
+  "Short-read against long-read Numbat on the same cells.",
+  "08", "08.cancer_calling_summary.R",
+  "Scores the callers against each other from the tables alone.",
+  "09", "09.cancer_calling_report.Rmd",
+  "This report."
+)
+show_table(steps)
+```
+
+The scripts this was collated from, and what changed:
+
+- `9.copykat.R` ran CopyKAT over the whole GEM well at once. That is wrong here, not merely
+  superseded - the well pools four donors and CopyKAT's baseline comes from the cells it is
+  given, so one donor's aneuploidy could define another's normal. `9a.copykat_perSample.R` is
+  the per-donor version and is what produced the surviving outputs.
+- the donor loop in `9a.copykat_perSample.R` was `unique(temp$sample_name)[c(4)]`, a hardcoded
+  index, so it did one donor per invocation with the index edited by hand between runs. It now
+  loops over all of them.
+- `9b.numbat.sh` declared `SAMPLES` twice, LK1 first and LK2 second, so the second assignment
+  silently overrode the first and the LK1 block was dead code that looked live. It also had
+  `set -euo pipefail` commented out, so a failure inside the container did not fail the array
+  task and a broken donor looked finished. Both fixed, and the run is now an argument.
+- `10.numbat_annotation.R` (LK2) and `13.numbat_annotation.R` (LK1) are the same script at two
+  stages. 13 hardcodes the donor directories with two commented out, and has its
+  `readRDS` commented out so it only ran if the object was already in the session. 10 derives
+  the directories, records which Numbat outputs each donor actually has, and handles
+  incomplete runs. Step 04 is 10, parameterised by run.
+- `12c.compare_numbat_copykat.R`, `12c.compare_numbat_copykat_501.R` and
+  `12d.compare_numbat_copykat_noDoublets.R` are one script run three times with the donor
+  edited in place. The entire difference between 12c and 12d is one `scDblFinder` subset call
+  and a different output directory name, which is now a flag.
+- `12d.investigate_clones.R` is **not** a separate analysis - 326 of its 333 non-comment lines
+  are verbatim inside `12d_noDoublets`. It is the earlier standalone version, already folded
+  in, so step 05 covers it.
+- `20a.compare_all_clone_methods.R` is deliberately out of scope: it also brings in the
+  mitochondrial clone callers and belongs with that report.
+
+# 7. Data locations
+
+```{r locations, results='asis'}
+locs <- tibble::tribble(
+  ~What, ~Where,
+  "Annotated input, pilot", sprintf("results/seurat_annotated/%s/LK1_GEX_CITE_DSB_BoneMarrowMap_projected.rds", pilot),
+  "Annotated input, LK2", sprintf("results/seurat_annotated/%s/demux_singlets_annotated_seurat.rds", run),
+  "Cell Ranger BAM (Numbat input)", "results/cellranger_withbam/<run>/<sample>-GEX/outs/possorted_genome_bam.bam",
+  "Phased SNP panel", "annotation/genome1K.phase3.SNP_AF5e2.chr1toX.hg38.sorted.vcf.gz",
+  "Numbat container", "containers/numbat-rbase_latest.sif",
+  "CopyKAT output", sprintf("results/seurat_annotated/%s/copykat_annotated/<donor>", pilot),
+  "Numbat output, pilot", sprintf("results/seurat_annotated/%s/numbat/LK1_<donor>/numbat_final", pilot),
+  "Numbat output, LK2", sprintf("results/seurat_annotated/%s/numbat/LK2_<donor>/numbat_final", run),
+  "Numbat output, pipeline", sprintf("results_nf/%s/09c_numbat_run", run),
+  "Long-read comparison", "results/longread_numbat/comparison_figures, comparison_tables",
+  "Benchmark tables and figures (step 08)", "results/benchmarking/cancer_calling"
+)
+show_table(locs)
+```
+
+```{r tools, results='asis'}
+tools <- tibble::tribble(
+  ~Tool, ~Version, ~Use,
+  "CopyKAT", "see sessionInfo", "expression-only CNV calling, per donor",
+  "Numbat", "container `numbat-rbase_latest.sif` - unpinned `latest` tag, version not recorded",
+  "allele-aware CNV and clone inference",
+  "Eagle", "v2.4.1, inside the Numbat container", "phasing",
+  "Seurat", "5.4.0", "object handling and plotting"
+)
+show_table(tools, "Tools")
+```
+
+# 8. Caveats
+
+- steps 01-05 and 07 are the collated, cleaned versions of the scripts that produced the
+  figures shown here; they were not re-executed for this report. Steps 06 and 08 were run
+  fresh, which is what `Analysis finished` reflects
+- the Numbat container is pinned to the `latest` tag, so the exact version that produced these
+  results is not recorded and cannot be reconstructed from the image name. Any re-run may not
+  reproduce them
+- **Numbat completed for only two of the four pilot donors.** HBDN392-AML-MDS and MOLM13 are
+  entirely `not_called`, so the caller comparison rests on two donors
+- the CopyKAT/Numbat agreement is not an independent comparison in the lymphoid compartment,
+  because those cells are CopyKAT's normal anchor. It is independent in the myeloid and
+  progenitor compartments
+- **HBDN206-MNpCT is called 81% aneuploid by CopyKAT and 74% tumour by Numbat**, and its name
+  does not carry an AML designation the way the other pilot donors' do. Either it is a
+  malignant sample that is simply not named as one, or both callers are failing on it in the
+  same way. Nothing here settles which, and it should be checked against the sample sheet
+  before these fractions are quoted
+- the long-read comparison covers three LK2 donors only, and the donorN directories in the
+  long-read output are positional - the mapping to sample names is an assumption, now asserted
+  in step 07 rather than trusted silently
+- step 06 reads the pipeline Numbat output under `results_nf/`, not the standalone output the
+  other steps use. They are separate runs and their numbers are not interchangeable
